@@ -13,9 +13,9 @@ from src.extract.linkedin_scraper import (
     JOB_URL_RE,
     SavedJob,
     _extract_description,
+    _extract_company,
     _extract_heading_h1,
     _extract_job_urls,
-    _extract_link_text_after_heading,
     _extract_location,
     _parse_job_detail,
 )
@@ -81,17 +81,27 @@ https://www.linkedin.com/jobs/view/?currentJobId=9&from=saved
 class TestParseJobDetail:
     @pytest.fixture
     def sample_snapshot(self) -> str:
+        # Mirrors the real BrowserMCP v0.1.x output: Page Title header + flat
+        # 'text:' rows + a few /url: lines for navigation chrome.
         return (
-            "- main [ref=e1]:\n"
-            "  - heading \"Senior Data Engineer\" [level=1] [ref=e2]\n"
-            "  - link \"Acme Corporation\" [ref=e3]: https://www.linkedin.com/company/acme\n"
-            "  - text \"Lima, Peru\"\n"
-            "  - text \"· hace 2 días\"\n"
-            "  - text \"Acerca del empleo\"\n"
-            "  - text \"Buscamos un Data Engineer con experiencia en pipelines ETL.\"\n"
-            "  - text \"Requisitos: SQL avanzado, Python, Snowflake.\"\n"
-            "  - text \"Beneficios: seguro médico, lunch tickets.\"\n"
-            "  - link \"Ver empleos similares\" [ref=e10]\n"
+            "Page URL: https://www.linkedin.com/jobs/view/12345/\n"
+            "Page Title: Senior Data Engineer | Acme Corporation | LinkedIn\n"
+            "Page Snapshot\n"
+            "```yaml\n"
+            "text: Inicio\n"
+            "/url: https://www.linkedin.com/mynetwork\n"
+            "text: Mi red\n"
+            "/url: https://www.linkedin.com/jobs/\n"
+            "text: Empleos\n"
+            "/url: https://www.linkedin.com/company/acme/\n"
+            "text: Lima, Peru\n"
+            "text: · hace 2 días\n"
+            "text: Buscamos un Data Engineer con experiencia en pipelines ETL.\n"
+            "text: Requisitos: SQL avanzado, Python, Snowflake.\n"
+            "text: Beneficios: seguro médico, lunch tickets.\n"
+            "text: Ver empleos similares\n"
+            "/url: https://www.linkedin.com/jobs/view/12345/\n"
+            "```\n"
         )
 
     def test_extracts_title(self, sample_snapshot):
@@ -112,14 +122,17 @@ class TestParseJobDetail:
         assert "Snowflake" in job.description
         assert "lunch tickets" in job.description
         assert "Ver empleos similares" not in job.description
+        # navigation chrome filtered
+        assert "/url:" not in job.description
+        assert "Mi red" not in job.description
 
     def test_no_title_warning(self):
-        snap = "- text \"something\""
+        snap = "Page URL: https://www.linkedin.com/jobs/view/1/\nPage Snapshot\n```yaml\ntext: hi"
         job = _parse_job_detail(snap, "https://www.linkedin.com/jobs/view/12345/")
         assert "title not found" in job.warnings
 
     def test_no_description_warning(self):
-        snap = '- main [ref=e1]:\n  - heading "X" [level=1] [ref=e2]'
+        snap = "Page URL: https://www.linkedin.com/jobs/view/1/\nPage Title: X | LinkedIn\nPage Snapshot\n"
         job = _parse_job_detail(snap, "https://www.linkedin.com/jobs/view/12345/")
         assert "description not found" in job.warnings
 
@@ -134,6 +147,18 @@ class TestParseJobDetail:
         assert d["title"] == "Senior Data Engineer"
         assert "company" in d
         assert "warnings" in d
+
+    def test_short_description_is_flagged(self):
+        # A near-empty snapshot with a valid Page Title but no description body.
+        snap = (
+            "Page URL: https://www.linkedin.com/jobs/view/1/\n"
+            "Page Title: Dev | Co | LinkedIn\n"
+            "Page Snapshot\n```yaml\ntext: Inicio\n```\n"
+        )
+        job = _parse_job_detail(snap, "https://www.linkedin.com/jobs/view/1/")
+        assert job.title == "Dev"
+        # description either empty or short → warning issued
+        assert any("short" in w or "not found" in w for w in job.warnings)
 
 
 class TestSavedJobDataclass:

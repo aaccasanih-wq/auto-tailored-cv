@@ -96,12 +96,28 @@ def _strip_yaml_indent(line: str) -> str:
     return line.lstrip(" -").strip()
 
 
+PAGE_TITLE_RE = re.compile(r'Page Title:\s*(.+?)\s*\|\s*LinkedIn', re.IGNORECASE)
+
+
 def _extract_heading_h1(snapshot_text: str) -> str:
-    """LinkedIn job pages render the job title as a single h1.
-    The accessibility-tree text we get back from playwright-style snapshot tools
-    looks something like:
-        \\ - heading "Senior Data Engineer" [level=1] [ref=e2]
-    We look for the first such line. If none, fall back to the <title>-like line."""
+    """Extract the job title.
+
+    BrowserMCP v0.1.x snapshots are flat text, not the structured yaml tree
+    that later versions produce. LinkedIn includes the job title in the page
+    <title> tag, rendered by BrowserMCP as the leading line:
+        Page Title: <title> | <company?> | LinkedIn
+    We prefer that. As a fallback we look for the older yaml-tree 'heading' line.
+    """
+    m = PAGE_TITLE_RE.search(snapshot_text)
+    if m:
+        # "Practicante Pro Comercial | apparka" -> take first half
+        # Some titles don't have company; some have only title|LinkedIn
+        title_field = m.group(1).strip()
+        # Split on first ' | ' and take the first chunk as the role
+        if " | " in title_field:
+            return title_field.split(" | ")[0].strip()
+        return title_field
+    # Older fallback: yaml tree
     for line in snapshot_text.splitlines():
         if "heading" in line and "level=1" in line:
             m = re.search(r'"([^"]+)"', line)
@@ -110,91 +126,186 @@ def _extract_heading_h1(snapshot_text: str) -> str:
     return ""
 
 
-def _extract_link_text_after_heading(snapshot_text: str, heading: str) -> str:
-    """LinkedIn puts the company name as a link immediately under the title;
-    we look for the first link whose text is non-empty after the heading line."""
-    seen_heading = False
-    for line in snapshot_text.splitlines():
-        if "heading" in line and heading and heading.lower() in line.lower():
-            seen_heading = True
-            continue
-        if not seen_heading:
-            continue
-        if "link" in line:
-            m = re.search(r'"([^"]+)"', line)
-            if m and m.group(1).strip():
-                return m.group(1).strip()
+def _extract_company(snapshot_text: str, title: str) -> str:
+    """Try to extract the company name from the Page Title too — it's the
+    middle component of "<title> | <company> | LinkedIn". If that fails, scan
+    for a /company/<slug>/ link in the snapshot and use the slug.
+    """
+    m = PAGE_TITLE_RE.search(snapshot_text)
+    if m:
+        title_field = m.group(1).strip()
+        parts = title_field.split(" | ")
+        if len(parts) >= 2:
+            return parts[1].strip()
+    # Fallback: first /company/<slug>/ URL
+    cm = re.search(r'linkedin\.com/company/([a-z0-9\-]+)/', snapshot_text, re.IGNORECASE)
+    if cm:
+        return cm.group(1).replace("-", " ").title()
     return ""
 
 
 def _extract_location(snapshot_text: str) -> str:
-    """LinkedIn renders the location as a short text node, usually the first
-    generic 'text' node immediately after the company link. As a heuristic we
-    find a line containing '·' OR matching the pattern 'City, Country'."""
+    """Try patterns like 'text: Lima, Peru' or 'text: Remote' — short location lines."""
     for line in snapshot_text.splitlines():
-        t = line.strip().lstrip("- ").strip()
-        if t.startswith("text ") and ("·" in t or "," in t or "Ciudad" in t):
-            m = re.search(r'"([^"]+)"', t)
-            if m and m.group(1).strip():
-                # Filter false positives (long sentences)
-                value = m.group(1).strip()
-                if len(value) <= 80:
-                    return value
+        t = line.strip()
+        # Strip leading 'text:' label
+        if t.lower().startswith("text:"):
+            text = t[5:].strip(' "\'')
+        else:
+            # Maybe older tree format
+            m = re.match(r'-\s+text\s+"([^"]+)"', t)
+            if not m:
+                continue
+            text = m.group(1).strip()
+        if not text or len(text) > 80:
+            continue
+        # Heuristics for a location: contains a comma + 2-3 words, OR words like
+        # 'Remoto', 'Híbrido', 'Presencial', 'Lima', 'Peru', etc.
+        if ("Remoto" in text or "Híbrido" in text or "Presencial" in text
+            or ("," in text and len(text.split()) <= 5)
+            or (text.startswith("Lima"))):
+            return text
     return ""
 
 
 def _extract_description(snapshot_text: str) -> str:
-    """LinkedIn job descriptions live in a long block — usually the largest
-    concentrated text after the 'About the job' marker (English) or
-    'Acerca del empleo' (Spanish)."""
-    marker_phrase = "Acerca del empleo"
-    snippet = snapshot_text
-    if marker_phrase.lower() in snapshot_text.lower():
-        idx = snapshot_text.lower().find(marker_phrase.lower())
-        snippet = snapshot_text[idx + len(marker_phrase):]
-    else:
-        # Fallback: capture everything after the second heading (after title)
-        headings = [l for l in snapshot_text.splitlines() if "heading" in l]
-        if len(headings) >= 2:
-            idx = snapshot_text.find(headings[1])
-            snippet = snapshot_text[idx + len(headings[1]):]
+    """Pull the job description from a BrowserMCP v0.1.x yaml-structured
+    snapshot.
 
-    # Extract the text lines after the marker; we keep those that look like
-    # plain content (starting with text/paragraph) until we hit a section
-    # header like "Ver empleos similares" / "Solicitar".
-    description_lines: List[str] = []
+    LinkedIn renders the description under:
+        - heading "Acerca del empleo" [level=2] [ref=...]
+    and the description block continues until the next heading of level 2
+    (often "Establecer una alerta para empleos similares", "Información
+    exclusiva sobre <company>...", etc.).
+
+    The block is made of `- paragraph` and `- text:` nodes, with optional
+    `- list > listitem` children. We descend through them in document order
+    and concatenate, restoring bullets/structure for readability.
+
+    If the structured marker "Acerca del empleo" / "About the job" isn't
+    present, fall back to the earlier flat 'text:' heuristics (still useful
+    when BrowserMCP returns a degenerate snapshot).
+    """
+
+    # ---- Structured-yaml branch -------------------------------------------- #
+    marker_phrase_sp = "Acerca del empleo"
+    marker_phrase_en = "About the job"
+    markers = (marker_phrase_sp, marker_phrase_en)
+    marker_idx = -1
+    snapshot_lower = snapshot_text.lower()
+    for marker in markers:
+        idx = snapshot_lower.find(marker.lower())
+        if idx != -1:
+            marker_idx = idx
+            break
+    if marker_idx != -1:
+        # Find the end of the marker line.
+        line_end = snapshot_text.find("\n", marker_idx)
+        if line_end == -1:
+            line_end = len(snapshot_text)
+        body = snapshot_text[line_end + 1:]
+        # Stop at the next level=2 heading if present.
+        stop_heading_re = re.compile(r'-\s+heading\s+"([^"]+)"\s*\[level=2\]', re.IGNORECASE)
+        m = stop_heading_re.search(body)
+        if m:
+            body = body[: m.start()]
+        # Now collect all the inner text from this slice. We strip yaml
+        # tree-dash prefixes and 'ref='/'level='/'textbox' decorations, but
+        # preserve the textual payload of paragraph/text/listitem/strong nodes.
+        # We collapse runs that share a paragraph (LinkedIn splits bold+regular
+        # text into many runs).
+        collected: List[str] = []
+        for raw in body.splitlines():
+            s = raw
+            # Skip pure heading/alert nodes
+            if not s.strip():
+                continue
+            # Strip leading dashes and indentation for matching but keep token
+            stripped = s.lstrip("- ")
+            # Drop '[ref=...]' or '[level=N]' modifiers right after the tag.
+            stripped = re.sub(r'\s*\[ref=[^\]]*\]', '', stripped)
+            stripped = re.sub(r'\s*\[level=\d+\]', '', stripped)
+            # Match `- text: <content>` / `- text "content"` / `text: content`
+            m2 = re.match(r'^(?:text|paragraph|listitem|strong)\b\s*:?\s*(.*)$', stripped, re.IGNORECASE)
+            content: Optional[str] = None
+            if m2:
+                c = m2.group(1).strip()
+                # Drop trailing [ref=...] modifiers if present
+                c = re.sub(r'\s*\[ref=[^\]]*\]\s*$', '', c)
+                # Strip wrapping quotes
+                c = c.strip(' "\'')
+                if c:
+                    content = c
+            if content is None:
+                # Maybe `- strong "..." [ref=...]` form
+                m3 = re.match(r'^(?:text|strong|paragraph|listitem)\s+"([^"]+)"', stripped, re.IGNORECASE)
+                if m3:
+                    content = m3.group(1).strip()
+            if content:
+                # Bullet-ize list items cleanly
+                # Prepend '- ' for listitem rows so the LLM sees bullet structure
+                if re.match(r'^(?:listitem)\b', stripped, re.IGNORECASE):
+                    collected.append(f"- {content}")
+                else:
+                    collected.append(content)
+        if collected:
+            return "\n".join(collected).strip()
+
+    # ---- Flat snapshot fallback -------------------------------------------- #
+    seen_start = False
+    nav_trivia = {
+        "Inicio", "Mi red", "Empleos", "Mensajes", "Notificaciones",
+        "Sales Nav", "Yo", "Para negocios", "Acerca de", "Ayuda",
+        "Cerrar", "Aceptar", "Saltar al contenido", "Pasar al contenido principal",
+    }
     stop_phrases = (
         "Ver empleos similares",
         "Solicitar",
-        "Aplicar",
+        "Aplicar ahora",
+        "Aplicar con",
         "See similar jobs",
         "Apply",
         "About us",
         "Acerca de nosotros",
+        "Promocionado por",
+        "Promedio de antigüedad",
+        "Ha contratado a",
+        "Desactivado",
     )
-    for line in snippet.splitlines():
+    description_lines: List[str] = []
+    for line in snapshot_text.splitlines():
         t = line.strip()
         if not t:
             continue
-        # Skip snapshot tool-ref and modifier brackets.
-        if "[ref=" in t or "level=" in t or "expanded=" in t:
+        if t.startswith("```"):
             continue
-        # Strip leading list dashes and quotes.
-        text = re.sub(r'^[\s\-]+', '', t)
-        text = re.sub(r'^text\s+', '', text)
-        text = text.strip(' "\'')
-        if not text:
+        if t.startswith("Page URL") or t.startswith("Page Title") or t.startswith("Page Snapshot"):
+            seen_start = True
             continue
-        if any(stop in text.lower() for stop in (p.lower() for p in stop_phrases)):
+        if not seen_start:
+            continue
+        if t.startswith("/url:"):
+            continue
+        if t.lower().startswith("text:"):
+            text = t[5:].strip(' "\'')
+        else:
+            m = re.match(r'-\s+text\s+"([^"]+)"', t)
+            if not m:
+                continue
+            text = m.group(1).strip()
+        if not text or text in nav_trivia:
+            continue
+        if any(stop in text for stop in stop_phrases):
             break
+        if len(text) <= 2:
+            continue
         description_lines.append(text)
-
     return "\n".join(description_lines).strip()
 
 
 def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
     title = _extract_heading_h1(snapshot_text)
-    company = _extract_link_text_after_heading(snapshot_text, title) if title else ""
+    company = _extract_company(snapshot_text, title) if title else ""
     location = _extract_location(snapshot_text)
     description = _extract_description(snapshot_text)
 
@@ -206,10 +317,45 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
     warnings: List[str] = []
     if not title:
         warnings.append("title not found")
-    if not description:
-        warnings.append("description not found")
 
-    return SavedJob(
+    # LinkedIn sometimes marks a job as "Respuestas gestionadas fuera de
+    # LinkedIn" / "Apply on company website" — in those cases the description
+    # is hosted externally and LinkedIn itself doesn't show it. We save what
+    # we do have (title, company, location) plus the external URL if present,
+    # so the user can decide to skip it or visit the URL manually.
+    is_external_apply = (
+        "Respuestas gestionadas fuera de LinkedIn" in snapshot_text
+        or "Apply on company website" in snapshot_text
+        or "Solicitar en el sitio web de la empresa" in snapshot_text
+    )
+    external_url_match = re.search(
+        r"linkedin\.com/safety/go/\?url=([^&\s]+)",
+        snapshot_text,
+    )
+    external_url = ""
+    if external_url_match:
+        # The url parameter is URL-encoded
+        from urllib.parse import unquote
+        external_url = unquote(external_url_match.group(1))
+
+    if not description:
+        if is_external_apply:
+            warnings.append("external_apply_no_description")
+        else:
+            warnings.append("description not found")
+    elif len(description) < 100:
+        warnings.append(f"short description ({len(description)} chars)")
+
+    # Compose a useful placeholder description when LinkedIn hosts none
+    if not description and is_external_apply:
+        description = (
+            "[LinkedIn no aloja la descripción completa. "
+            "Esta oferta redirige a un sitio externo para aplicar.]\n"
+            f"URL externa: {external_url}" if external_url
+            else "[LinkedIn no aloja la descripción completa para esta oferta.]"
+        )
+
+    job = SavedJob(
         title=title,
         url=url,
         company=company,
@@ -218,6 +364,10 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
         job_id=job_id,
         warnings=warnings,
     )
+    # Stash the external apply URL for downstream tools
+    if external_url:
+        job.warnings.append(f"external_url:{external_url}")
+    return job
 
 
 # --------------------------------------------------------------------------- #
@@ -226,9 +376,20 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
 
 
 def _build_mcp_config() -> StdioMcpConfig:
+    # BrowserMCP runs via `npx -y @browsermcp/mcp@latest`, which downloads
+    # the package to npm's cache. On this Mac the default cache (~/.npm)
+    # has permission issues; we always redirect to a user-owned cache so
+    # `npx` doesn't fail with EACCES/EEXIST mid-scrape.
+    import os
+    env = dict(os.environ)
+    env.setdefault(
+        "npm_config_cache", str(Path.home() / ".npm-user-cache")
+    )
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     return StdioMcpConfig(
         command=settings.browser_mcp_command,
         args=list(settings.browser_mcp_args),
+        env=env,
     )
 
 
@@ -268,9 +429,27 @@ async def extract_saved_jobs(
             )
         # 1. List saved jobs.
         log.info("navigating to %s", saved_jobs_url)
-        await client.call_tool("browser_navigate", {"url": saved_jobs_url})
-        await asyncio.sleep(nav_delay)
-        list_snapshot = extract_text_content(await client.call_tool("browser_snapshot", {}))
+        try:
+            await client.call_tool("browser_navigate", {"url": saved_jobs_url}, timeout_s=60)
+            await asyncio.sleep(max(nav_delay, 5))
+        except McpError as e:
+            # Common case on the very first run: the BrowserMCP extension
+            # reports "No connection to browser extension" because Chrome
+            # hasn't fully connected yet. Fall back to a snapshot of the
+            # currently-focused tab, which is often already on the right
+            # page (because the user pinned and navigated there manually).
+            msg = str(e)
+            log.warning("browser_navigate failed: %s — attempting snapshot of current tab", msg[:120])
+        try:
+            list_snapshot = extract_text_content(
+                await client.call_tool("browser_snapshot", {}, timeout_s=60)
+            )
+        except McpError as e:
+            log.error("browser_snapshot also failed: %s", e)
+            return []
+        if not list_snapshot.strip():
+            log.error("empty snapshot — tab not on a valid page?")
+            return []
         job_urls = _extract_job_urls(list_snapshot)
         log.info("found %d saved-job URLs in snapshot", len(job_urls))
 
@@ -279,10 +458,23 @@ async def extract_saved_jobs(
         for idx, url in enumerate(job_urls, start=1):
             log.info("[%d/%d] navigating to %s", idx, len(job_urls), url)
             try:
-                await client.call_tool("browser_navigate", {"url": url})
-                await asyncio.sleep(nav_delay)
-                snap = extract_text_content(await client.call_tool("browser_snapshot", {}))
+                await client.call_tool("browser_navigate", {"url": url}, timeout_s=60)
+                # LinkedIn renders the description block lazily (~3-10s after
+                # the DOM is interactive). We wait nav_delay, snapshot, and if
+                # the description came up short we wait another beat and retry —
+                # up to two retries (so 3 snapshots max).
+                await asyncio.sleep(max(nav_delay, 6))
+                snap = extract_text_content(await client.call_tool("browser_snapshot", {}, timeout_s=60))
                 job = _parse_job_detail(snap, url)
+                retries = 0
+                while ("description not found" in job.warnings
+                       or ("short description" in " ".join(job.warnings) and not job.description)) \
+                       and retries < 2:
+                    retries += 1
+                    log.info("snapshot retry %d for %s (no description yet)", retries, url)
+                    await asyncio.sleep(6)
+                    snap = extract_text_content(await client.call_tool("browser_snapshot", {}, timeout_s=60))
+                    job = _parse_job_detail(snap, url)
                 if job.warnings:
                     log.warning("parse warnings for %s: %s", url, job.warnings)
                 jobs.append(job)
