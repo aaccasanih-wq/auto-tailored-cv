@@ -1,0 +1,56 @@
+# --- Secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Personal data ---
+input/*.docx
+input/*.doc
+input/*.pdf
+
+# --- Generated outputs (regenerated on each run) ---
+jobs/
+output/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# --- IDE / editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# --- Logs / runtime ---
+*.log
+*.pid
+.scratch/
+
+# --- Opencode / MCP local config (user-specific) ---
+opencode.jsonc
+.mcp.json
