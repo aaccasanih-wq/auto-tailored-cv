@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional  # noqa: E402
 
 try:
     from dotenv import load_dotenv
@@ -54,6 +54,9 @@ def _env_path(name: str, default: str) -> Path:
     return p
 
 
+from typing import List, Optional  # noqa: E402
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- LLM (OpenCode Go) ---
@@ -66,6 +69,9 @@ class Settings:
     # --- LinkedIn / Browser MCP ---
     linkedin_saved_jobs_url: str
     browser_timeout_ms: int
+    browser_mcp_command: str
+    browser_mcp_args: List[str]
+    browser_nav_delay_s: int
 
     # --- Filesystem ---
     base_cv_path: Path
@@ -94,6 +100,11 @@ def _load() -> Settings:
             "LINKEDIN_SAVED_JOBS_URL", "https://www.linkedin.com/my-items/saved-jobs/"
         ) or "",
         browser_timeout_ms=_env_int("BROWSER_TIMEOUT_MS", 15000),
+        browser_mcp_command=_env("BROWSER_MCP_COMMAND", "npx") or "npx",
+        browser_mcp_args=(
+            _env("BROWSER_MCP_ARGS", "-y @browsermcp/mcp@latest") or "-y @browsermcp/mcp@latest"
+        ).split(),
+        browser_nav_delay_s=_env_int("BROWSER_NAV_DELAY_S", 3),
         base_cv_path=_env_path("BASE_CV_PATH", "input/base_cv.docx"),
         jobs_dir=_env_path("JOBS_DIR", "jobs"),
         output_dir=_env_path("OUTPUT_DIR", "output"),

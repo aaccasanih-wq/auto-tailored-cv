@@ -1,0 +1,150 @@
+"""Tests for src/extract/linkedin_scraper.py — parser logic only.
+
+The MCP transport itself requires launching the Browser MCP subprocess + a
+real Chrome session, so we test only the pure-Python parsing functions here
+(end-to-end is validated by running the CLI with BrowserMCP installed).
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from src.extract.linkedin_scraper import (
+    JOB_URL_RE,
+    SavedJob,
+    _extract_description,
+    _extract_heading_h1,
+    _extract_job_urls,
+    _extract_link_text_after_heading,
+    _extract_location,
+    _parse_job_detail,
+)
+
+
+class TestJobUrlRegex:
+    def test_canonical_path(self):
+        m = JOB_URL_RE.search("https://www.linkedin.com/jobs/view/senior-data-engineer-at-acme-1234567890/")
+        assert m is not None
+        assert m.group(1) == "1234567890"
+
+    def test_numeric_only(self):
+        m = JOB_URL_RE.search("https://www.linkedin.com/jobs/view/1234567890/")
+        assert m is not None
+        assert m.group(1) == "1234567890"
+
+    def test_currentJobId_query(self):
+        m = JOB_URL_RE.search(
+            "https://www.linkedin.com/jobs/view/?currentJobId=9876543210&refId=abc"
+        )
+        assert m is not None
+        assert m.group(2) == "9876543210"
+
+    def test_subdomain(self):
+        m = JOB_URL_RE.search("https://jobs.linkedin.com/jobs/view/555")
+        assert m is not None
+        assert m.group(1) == "555"
+
+    def test_non_match(self):
+        m = JOB_URL_RE.search("https://www.linkedin.com/in/someone/")
+        assert m is None
+
+    def test_empty_input(self):
+        assert JOB_URL_RE.search("") is None
+
+
+class TestExtractJobUrls:
+    def test_basic_list(self):
+        snapshot = """
+- main [ref=e1]:
+  - link "Senior Data Engineer" [ref=e2]: https://www.linkedin.com/jobs/view/data-engineer-at-acme-100
+  - link "Backend" [ref=e3]: https://www.linkedin.com/jobs/view/200
+"""
+        urls = _extract_job_urls(snapshot)
+        assert len(urls) == 2
+        assert urls[0] == "https://www.linkedin.com/jobs/view/100/"
+        assert urls[1] == "https://www.linkedin.com/jobs/view/200/"
+
+    def test_dedupes(self):
+        snapshot = """
+some text https://www.linkedin.com/jobs/view/9/
+more text https://www.linkedin.com/jobs/view/9/
+https://www.linkedin.com/jobs/view/?currentJobId=9&from=saved
+"""
+        urls = _extract_job_urls(snapshot)
+        assert len(urls) == 1
+        assert urls[0] == "https://www.linkedin.com/jobs/view/9/"
+
+    def test_no_links_returns_empty(self):
+        assert _extract_job_urls("no jobs here") == []
+
+
+class TestParseJobDetail:
+    @pytest.fixture
+    def sample_snapshot(self) -> str:
+        return (
+            "- main [ref=e1]:\n"
+            "  - heading \"Senior Data Engineer\" [level=1] [ref=e2]\n"
+            "  - link \"Acme Corporation\" [ref=e3]: https://www.linkedin.com/company/acme\n"
+            "  - text \"Lima, Peru\"\n"
+            "  - text \"· hace 2 días\"\n"
+            "  - text \"Acerca del empleo\"\n"
+            "  - text \"Buscamos un Data Engineer con experiencia en pipelines ETL.\"\n"
+            "  - text \"Requisitos: SQL avanzado, Python, Snowflake.\"\n"
+            "  - text \"Beneficios: seguro médico, lunch tickets.\"\n"
+            "  - link \"Ver empleos similares\" [ref=e10]\n"
+        )
+
+    def test_extracts_title(self, sample_snapshot):
+        job = _parse_job_detail(sample_snapshot, "https://www.linkedin.com/jobs/view/12345/")
+        assert job.title == "Senior Data Engineer"
+
+    def test_extracts_company(self, sample_snapshot):
+        job = _parse_job_detail(sample_snapshot, "https://www.linkedin.com/jobs/view/12345/")
+        assert job.company == "Acme Corporation"
+
+    def test_extracts_location(self, sample_snapshot):
+        job = _parse_job_detail(sample_snapshot, "https://www.linkedin.com/jobs/view/12345/")
+        assert "Lima" in job.location
+
+    def test_extracts_description_up_to_stop_phrase(self, sample_snapshot):
+        job = _parse_job_detail(sample_snapshot, "https://www.linkedin.com/jobs/view/12345/")
+        assert "pipelines ETL" in job.description
+        assert "Snowflake" in job.description
+        assert "lunch tickets" in job.description
+        assert "Ver empleos similares" not in job.description
+
+    def test_no_title_warning(self):
+        snap = "- text \"something\""
+        job = _parse_job_detail(snap, "https://www.linkedin.com/jobs/view/12345/")
+        assert "title not found" in job.warnings
+
+    def test_no_description_warning(self):
+        snap = '- main [ref=e1]:\n  - heading "X" [level=1] [ref=e2]'
+        job = _parse_job_detail(snap, "https://www.linkedin.com/jobs/view/12345/")
+        assert "description not found" in job.warnings
+
+    def test_job_id_extracted(self, sample_snapshot):
+        url = "https://www.linkedin.com/jobs/view/senior-engineer-1234567/"
+        job = _parse_job_detail(sample_snapshot, url)
+        assert job.job_id == "1234567"
+
+    def test_extracts_dataclass_returns_dict(self, sample_snapshot):
+        job = _parse_job_detail(sample_snapshot, "https://www.linkedin.com/jobs/view/12345/")
+        d = job.to_dict()
+        assert d["title"] == "Senior Data Engineer"
+        assert "company" in d
+        assert "warnings" in d
+
+
+class TestSavedJobDataclass:
+    def test_defaults(self):
+        j = SavedJob(title="x", url="https://example.com")
+        assert j.title == "x"
+        assert j.company == ""
+        assert j.warnings == []
+
+    def test_to_dict_round_trip(self):
+        j = SavedJob(title="t", url="u", company="c", warnings=["x"])
+        d = j.to_dict()
+        assert d["title"] == "t"
+        assert d["warnings"] == ["x"]
