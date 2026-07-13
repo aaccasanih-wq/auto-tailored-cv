@@ -15,19 +15,19 @@ from tests.test_helpers_llm import StubLLMClient, llm_response
 
 def _base_cv() -> CVProfile:
     return CVProfile(
-        name="AXEL AARON CCASANI HUACHUA",
-        contact="986 531 450 | email@example.com",
+        name="ALEX SAMPLE CANDIDATE",
+        contact="555 0100 | email@example.com",
         summary="En búsqueda de un puesto en Data Science",
         sections=[
             CVSection(
                 title="EDUCACIÓN",
                 paragraphs=["Lic. en Economía | 2021 – 2026"],
-                tables=[[["Universidad del Pacífico", "2021 – 2026"]]],
+                tables=[[["Example University", "2021 – 2026"]]],
             ),
             CVSection(
                 title="EXPERIENCIA LABORAL",
                 paragraphs=["Automaticé validación de facturas en Excel."],
-                tables=[[["Metso Perú — Practicante", "Nov 2024 – Feb 2025"]]],
+                tables=[[["ExampleCorp — Intern", "Nov 2024 – Feb 2025"]]],
             ),
             CVSection(
                 title="HABILIDADES & HERRAMIENTAS",
@@ -35,7 +35,7 @@ def _base_cv() -> CVProfile:
                 tables=[[["Python", "Jupyter, Pandas, NumPy"], ["Excel", "SAP"]]],
             ),
         ],
-        raw_text="AXEL\n...",
+        raw_text="ALEX\n...",
     )
 
 
@@ -61,10 +61,10 @@ class TestValidateShape:
             "summary": "En búsqueda de un puesto en Data Engineering",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
-                 "tables": [[["Universidad del Pacífico", "2021 – 2026"]]]},
+                 "tables": [[["Example University", "2021 – 2026"]]]},
                 {"title": "EXPERIENCIA LABORAL",
                  "paragraphs": ["Automaticé validación de facturas en Excel y SAP."],
-                 "tables": [[["Metso Perú — Practicante", "Nov 2024 – Feb 2025"]]]},
+                 "tables": [[["ExampleCorp — Intern", "Nov 2024 – Feb 2025"]]]},
                 {"title": "HABILIDADES & HERRAMIENTAS", "paragraphs": [],
                  "tables": [[["Python", "Pandas, NumPy, Jupyter"], ["Excel", "SAP"]]]},
             ],
@@ -117,10 +117,10 @@ class TestTailorCV:
             "summary": "En búsqueda de Data Engineer",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
-                 "tables": [[["Universidad del Pacífico", "2021 – 2026"]]]},
+                 "tables": [[["Example University", "2021 – 2026"]]]},
                 {"title": "EXPERIENCIA LABORAL",
                  "paragraphs": ["Automaticé la validación de facturas en Excel y SAP."],
-                 "tables": [[["Metso Perú — Practicante", "Nov 2024 – Feb 2025"]]]},
+                 "tables": [[["ExampleCorp — Intern", "Nov 2024 – Feb 2025"]]]},
                 {"title": "HABILIDADES & HERRAMIENTAS", "paragraphs": [],
                  "tables": [[["Python", "Pandas, NumPy, Jupyter"], ["Excel", "SAP"]]]},
             ],
@@ -143,9 +143,9 @@ class TestTailorCV:
             "summary": "x",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
-                 "tables": [[["Universidad del Pacífico", "2021 – 2026"]]]},
+                 "tables": [[["Example University", "2021 – 2026"]]]},
                 {"title": "EXPERIENCIA LABORAL", "paragraphs": ["a"],
-                 "tables": [[["Metso Perú — Practicante", "Nov 2024 – Feb 2025"]]]},
+                 "tables": [[["ExampleCorp — Intern", "Nov 2024 – Feb 2025"]]]},
                 {"title": "HABILIDADES & HERRAMIENTAS", "paragraphs": [],
                  "tables": [[["Python", "Pandas, NumPy, Jupyter"], ["Excel", "SAP"]]]},
             ],
@@ -222,9 +222,9 @@ class TestRepair:
             "summary": "x fixed",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
-                 "tables": [[["Universidad del Pacífico", "2021 – 2026"]]]},
+                 "tables": [[["Example University", "2021 – 2026"]]]},
                 {"title": "EXPERIENCIA LABORAL", "paragraphs": ["a"],
-                 "tables": [[["Metso Perú — Practicante", "Nov 2024 – Feb 2025"]]]},
+                 "tables": [[["ExampleCorp — Intern", "Nov 2024 – Feb 2025"]]]},
                 {"title": "HABILIDADES & HERRAMIENTAS", "paragraphs": [],
                  "tables": [[["Python", "Pandas, NumPy, Jupyter"], ["Excel", "SAP"]]]},
             ],

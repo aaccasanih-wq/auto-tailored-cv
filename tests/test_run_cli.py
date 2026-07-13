@@ -89,7 +89,7 @@ class TestCacheHelpers:
 
 def _base_profile() -> CVProfile:
     return CVProfile(
-        name="AXEL",
+        name="ALEX",
         contact="email",
         summary="x",
         sections=[
@@ -183,7 +183,7 @@ def _fake_base_docx(tmp_path: Path) -> Path:
     """Build a minimal docx fixture for renderer tests."""
     from docx import Document
     doc = Document()
-    doc.add_paragraph("AXEL")
+    doc.add_paragraph("ALEX")
     doc.add_paragraph("email")
     doc.add_paragraph("x")
     doc.add_paragraph("EDUCACIÓN")

@@ -15,21 +15,21 @@ from src.render.docx_writer import write_tailored_docx, _set_paragraph_text, _se
 def base_docx(tmp_path: Path) -> Path:
     """Build a CV-docx fixture mirroring the real one's structure."""
     doc = Document()
-    doc.add_paragraph("AXEL AARON CCASANI HUACHUA")
-    doc.add_paragraph("986 531 450 | aaronaxel810@gmail.com")
+    doc.add_paragraph("ALEX SAMPLE CANDIDATE")
+    doc.add_paragraph("555 0100 | candidate@example.com")
     doc.add_paragraph("En búsqueda de un puesto en Data Science")
     doc.add_paragraph("")
     doc.add_paragraph("EDUCACIÓN")
     doc.add_paragraph("Lic. en Economía | 2021 – 2026")
     t = doc.add_table(rows=1, cols=2)
-    t.rows[0].cells[0].text = "Universidad del Pacífico"
+    t.rows[0].cells[0].text = "Example University"
     t.rows[0].cells[1].text = "2021 – 2026"
 
     doc.add_paragraph("EXPERIENCIA LABORAL")
     doc.add_paragraph("Automaticé los procesos de validación de facturas.")
     doc.add_paragraph("Extraje y analicé datos de SAP.")
     t2 = doc.add_table(rows=1, cols=2)
-    t2.rows[0].cells[0].text = "Metso Perú — Practicante"
+    t2.rows[0].cells[0].text = "ExampleCorp — Intern"
     t2.rows[0].cells[1].text = "Nov 2024 – Feb 2025"
 
     doc.add_paragraph("HABILIDADES & HERRAMIENTAS")
@@ -83,13 +83,13 @@ class TestWriteTailoredDocx:
         out = tmp_path / "tailored.docx"
         tailored = {"summary": "", "sections": []}
         write_tailored_docx(base_docx, tailored, out)
-        assert read_cv(out).name == "AXEL AARON CCASANI HUACHUA"
+        assert read_cv(out).name == "ALEX SAMPLE CANDIDATE"
 
     def test_contact_unchanged(self, base_docx: Path, tmp_path: Path):
         out = tmp_path / "tailored.docx"
         tailored = {"summary": "", "sections": []}
         write_tailored_docx(base_docx, tailored, out)
-        assert "aaronaxel810@gmail.com" in read_cv(out).contact
+        assert "candidate@example.com" in read_cv(out).contact
 
     def test_section_paragraph_rewritten(self, base_docx: Path, tmp_path: Path):
         out = tmp_path / "tailored.docx"

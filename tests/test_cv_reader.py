@@ -44,21 +44,21 @@ class TestIsHeading:
 def tmp_cv(tmp_path: Path) -> Path:
     """Build a small CV .docx in tmp_path mirroring the real CV convention."""
     doc = Document()
-    doc.add_paragraph("AXEL AARON CCASANI HUACHUA")
-    doc.add_paragraph("986 531 450 | aaronaxel810@gmail.com")
+    doc.add_paragraph("ALEX SAMPLE CANDIDATE")
+    doc.add_paragraph("555 0100 | candidate@example.com")
     doc.add_paragraph("En búsqueda de un puesto en Data Science")
 
     doc.add_paragraph("EDUCACIÓN")
     doc.add_paragraph("Lic. en Economía | 2021 – 2026")
     table_edu = doc.add_table(rows=1, cols=2)
-    table_edu.rows[0].cells[0].text = "Universidad del Pacífico"
+    table_edu.rows[0].cells[0].text = "Example University"
     table_edu.rows[0].cells[1].text = "2021 – 2026"
 
     doc.add_paragraph("EXPERIENCIA LABORAL")
     doc.add_paragraph("Automaticé los procesos de validación de facturas.")
     doc.add_paragraph("Extraje y analicé datos de SAP.")
     table_exp = doc.add_table(rows=1, cols=2)
-    table_exp.rows[0].cells[0].text = "Metso Perú — Practicante"
+    table_exp.rows[0].cells[0].text = "ExampleCorp — Intern"
     table_exp.rows[0].cells[1].text = "Nov 2024 – Feb 2025"
 
     path = tmp_path / "test_cv.docx"
@@ -69,11 +69,11 @@ def tmp_cv(tmp_path: Path) -> Path:
 class TestReadCV:
     def test_parses_name(self, tmp_cv: Path):
         profile = read_cv(tmp_cv)
-        assert profile.name == "AXEL AARON CCASANI HUACHUA"
+        assert profile.name == "ALEX SAMPLE CANDIDATE"
 
     def test_parses_contact(self, tmp_cv: Path):
         profile = read_cv(tmp_cv)
-        assert "aaronaxel810@gmail.com" in profile.contact
+        assert "candidate@example.com" in profile.contact
 
     def test_parses_summary(self, tmp_cv: Path):
         profile = read_cv(tmp_cv)
@@ -94,7 +94,7 @@ class TestReadCV:
         profile = read_cv(tmp_cv)
         exp = next(s for s in profile.sections if s.title == "EXPERIENCIA LABORAL")
         assert len(exp.tables) == 1
-        assert exp.tables[0][0][0] == "Metso Perú — Practicante"
+        assert exp.tables[0][0][0] == "ExampleCorp — Intern"
 
     def test_raw_text_contains_all_sections(self, tmp_cv: Path):
         profile = read_cv(tmp_cv)
@@ -104,7 +104,7 @@ class TestReadCV:
     def test_name_first_heading_not_treated_as_section(self, tmp_cv: Path):
         profile = read_cv(tmp_cv)
         titles = [s.title for s in profile.sections]
-        assert "AXEL AARON CCASANI HUACHUA" not in titles
+        assert "ALEX SAMPLE CANDIDATE" not in titles
 
     def test_to_json_round_trip(self, tmp_cv: Path, tmp_path: Path):
         import json
