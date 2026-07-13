@@ -25,7 +25,7 @@ fi
 ARCH=$(uname -m)
 case "$ARCH" in
     arm64)   PLATFORM="aarch64" ;;
-    x86_64)  PLATFORM="x86-64"   ;;
+    x86_64)  PLATFORM="x86_64"   ;;
     *)
         echo "Unsupported architecture: $ARCH" >&2
         exit 1
@@ -47,8 +47,15 @@ if [ -z "$LATEST_DIR" ]; then
 fi
 echo "Latest found: $LATEST_DIR"
 
-DMG_NAME="LibreOffice_${LATEST_DIR}_MacOS_${PLATFORM}.dmg"
-DMG_URL="https://download.documentfoundation.org/libreoffice/stable/${LATEST_DIR}/mac/${PLATFORM}/${DMG_NAME}"
+# Directory name uses underscore (x86_64); DMG file name uses hyphen (x86-64).
+DIR_PLATFORM="$PLATFORM"
+case "$PLATFORM" in
+    x86_64) FILE_PLATFORM="x86-64" ;;
+    aarch64) FILE_PLATFORM="aarch64" ;;
+    *) FILE_PLATFORM="$PLATFORM" ;;
+esac
+DMG_NAME="LibreOffice_${LATEST_DIR}_MacOS_${FILE_PLATFORM}.dmg"
+DMG_URL="https://download.documentfoundation.org/libreoffice/stable/${LATEST_DIR}/mac/${DIR_PLATFORM}/${DMG_NAME}"
 
 TMP_DIR="$(mktemp -d)"
 DMG_PATH="$TMP_DIR/$DMG_NAME"
