@@ -17,7 +17,7 @@ def _base_cv() -> CVProfile:
     return CVProfile(
         name="ALEX SAMPLE CANDIDATE",
         contact="555 0100 | email@example.com",
-        summary="En búsqueda de un puesto en Data Science",
+        summary="En búsqueda de un puesto en Data Science · Análisis · Visualización",
         sections=[
             CVSection(
                 title="EDUCACIÓN",
@@ -58,7 +58,7 @@ class TestValidateShape:
     def test_valid_output(self):
         base = _base_cv()
         tailored = {
-            "summary": "En búsqueda de un puesto en Data Engineering",
+            "summary": "En búsqueda de un puesto en Data Engineering · Pipelines · Cloud",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
                  "tables": [[["Example University", "2021 – 2026"]]]},
@@ -110,11 +110,77 @@ class TestValidateShape:
         assert any("col count" in w or "cell count" in w or "EDUCACIÓN" in w for w in warnings)
 
 
+class TestSummaryFormatValidation:
+    """The base CV summary starts with 'En búsqueda de un puesto en ...'.
+    A tailored summary MUST preserve that template (enforced in code)."""
+
+    def _base_cv_harvard(_):  # noqa
+        return CVProfile(
+            name="ALEX",
+            contact="email",
+            summary="En búsqueda de un puesto en X · Y · Z",
+            sections=[
+                CVSection(title="EDUCACIÓN", paragraphs=["a"], tables=[[["u", "y"]]]),
+            ],
+            raw_text="...",
+        )
+
+    def test_keeps_template_no_warning(self):
+        base = CVProfile(
+            name="x", contact="y",
+            summary="En búsqueda de un puesto en Digital Products · Análisis de Datos · Transformación Digital",
+            sections=[], raw_text="",
+        )
+        tailored = {
+            "summary": "En búsqueda de un puesto en Ingeniería de Datos · Reportes · Power BI",
+            "sections": [],
+        }
+        warnings = _validate_shape(tailored, base)
+        assert not any("summary" in w for w in warnings)
+
+    def test_breaks_template_warns(self):
+        base = CVProfile(
+            name="x", contact="y",
+            summary="En búsqueda de un puesto en Digital Products · Análisis · Transf",
+            sections=[], raw_text="",
+        )
+        tailored = {
+            "summary": "Estudiante de Economía con experiencia en análisis de datos",
+            "sections": [],
+        }
+        warnings = _validate_shape(tailored, base)
+        assert any("summary must start" in w for w in warnings)
+
+    def test_missing_dots_warns(self):
+        base = CVProfile(
+            name="x", contact="y",
+            summary="En búsqueda de un puesto en X · Y · Z",
+            sections=[], raw_text="",
+        )
+        tailored = {
+            "summary": "En búsqueda de un puesto en Data Engineering",  # 0 separators
+            "sections": [],
+        }
+        warnings = _validate_shape(tailored, base)
+        assert any("separators" in w for w in warnings)
+
+    def test_no_base_summary_no_warning(self):
+        # If base CV had NO "En búsqueda..." opening, we don't enforce the template.
+        base = CVProfile(
+            name="x", contact="y",
+            summary="Data scientist with 5 years of experience",
+            sections=[], raw_text="",
+        )
+        tailored = {"summary": "anything goes here", "sections": []}
+        warnings = _validate_shape(tailored, base)
+        assert not any("summary" in w for w in warnings)
+
+
 class TestTailorCV:
     def test_routes_correct_payload_through_stub(self):
         base = _base_cv()
         canned = {
-            "summary": "En búsqueda de Data Engineer",
+            "summary": "En búsqueda de un puesto en Data Engineering · Pipelines · Cloud",
             "sections": [
                 {"title": "EDUCACIÓN", "paragraphs": ["Lic. en Economía | 2021 – 2026"],
                  "tables": [[["Example University", "2021 – 2026"]]]},

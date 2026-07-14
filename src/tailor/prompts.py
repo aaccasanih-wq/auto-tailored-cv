@@ -70,25 +70,61 @@ CRITICAL RULES (any violation is a hard failure):
   them, but the NUMBER of bullets per experience/project must stay the same.
 - DO NOT add or remove sections. The output MUST contain exactly the same
   sections (titles) as the base CV, in the same order.
-- DO NOT pad with buzzwords ("liderazgo transformador", " visión estratégica
+- DO NOT pad with buzzwords ("liderazgo transformador", "visión estratégica
   360°", etc.) unless they're evidenced by the base CV.
 - Keep the total length close to the base CV. Aim for ±10% of original length.
 
-WHAT YOU CAN DO:
-- Reorder existing bullets within each experience/project so the ones most
-  relevant to THIS job come first.
-- Reorder the comma-separated skill lists inside the skills table rows so the
+IMMUTABLE LINES (return byte-for-byte unchanged):
+- Project titles such as "Rastreador de Gastos Automatizado con IA", \
+"KAYLA — Recordatorios automáticos de citas y medicamentos", "AI Personal \
+Agent". These are static headers per project and must NOT be reworded.
+- Project parenthetical descriptors such as "(Dashboard)", \
+"(Landing Page · Dashboard)", "(Agentic AI · RAG · Automatización)". These \
+mark the project type and must remain verbatim.
+- The contact line is also immutable (name + phone + email), and so are the \
+section headings.
+
+WHAT YOU CAN DO (tailoring license):
+- PARAPHRASE existing bullets to surface relevance — same underlying FACTS,
+  reworded vocabulary that resonates with this job's language. Aggressive \
+  paraphrasing is allowed and encouraged, as long as facts stay true.
+- REORDER bullets within an experience/project so the most relevant ones \
+  appear first.
+- REORDER the comma-separated skill lists inside the skills table rows so the \
   skills most desired by this job come first (still using only real skills).
-- Reword bullets to surface the relevance to this job — same facts, better
-  framing ("translated" not "invented").
-- Rewrite the candidate's one-line summary so it mentions the role category in
-  the candidate's own words.
-- Lightly tighten / sharpen language; do not rewrite for the sake of rewriting.
+- COMPRESS or EXPAND bullets within reason. If the job emphasizes stakeholder \
+  reporting, expand a generic "Elaboré reportes" bullet into more specific \
+  framing of the same underlying experience (still truthful, no new facts).
+- TIGHTEN or sharpen language; do not rewrite for the sake of rewriting.
+
+SUMMARY FORMAT (HARD RULE):
+The base CV summary line has this exact shape:
+  "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>"
+where <cat1>, <cat2>, <cat3> are 2-to-4-word phrases separated by " · " \
+(mid-dot with one space on each side).
+Your tailored summary MUST preserve this exact template. Only replace <cat1>, \
+<cat2>, <cat3> with phrases that:
+  1. Reflect the most relevant skills/areas for THIS job posting.
+  2. Are grounded in the candidate's demonstrated experience (don't invent).
+  3. Are in Spanish, 2-4 words each.
+  4. Are NOT verbatim copies of phrases from the job posting.
+
+GOOD examples (format preserved):
+- Data Engineer: "En búsqueda de un puesto en Ingeniería de Datos · \
+Análisis de Datos · Automatización de Procesos"
+- Business Practitioner: "En búsqueda de un puesto en Analítica de Negocios · \
+Reportes Financieros · Visualización de Datos"
+- Process Transformation Asst: "En búsqueda de un puesto en Transformación de \
+Procesos · Mejora Continua · Análisis Operativo"
+BAD examples (format breaks):
+- "Estudiante de Economía con experiencia en..." (breaks the "En búsqueda..." \
+opening)
+- Adds "Snowflake" / "dbt" verbatim from the job posting
 
 OUTPUT FORMAT — return a single JSON object with this exact schema:
 
 {
-  "summary": "<rewritten summary line in Spanish, ~1 line>",
+  "summary": "<En búsqueda de un puesto en <cat1> · <cat2> · <cat3>>",
   "sections": [
     {
       "title": "<SECTION TITLE — MUST match the input, do not rename>",
@@ -106,6 +142,8 @@ Rules for the JSON:
 - Cells that contain pure facts (dates, university name, company name, role
   title) MUST be returned byte-for-byte unchanged. Cells that contain prose
   (bullet text in a single-cell table, etc.) MAY be reworded.
+- Cells that contain project titles or parenthetical descriptors MUST be returned
+  byte-for-byte unchanged (see IMMUTABLE LINES above).
 - Preserve all Spanish accents (á é í ó ú ñ ¿ ¡).
 - Return ONLY the JSON object, no commentary, no markdown fences.
 """
@@ -147,16 +185,25 @@ Your job is to spot problems. Look explicitly for these issue types:
 2. "verbatim_copy": any phrase of 4+ words in the tailored CV that appears
    word-for-word in the job posting. Each is a "high" issue.
 3. "keyword_stuffing": a section that crams job-specific keywords awkwardly,
-   making the bullet read unnaturally (e.g. "experiencia en pipelines ETL en
-   cloud con dbt y Snowflake con dbt"). Severity "medium".
+   making the bullet read unnaturally. Severity "medium".
 4. "incongruity": a claim that contradicts another claim in the tailored CV
    (e.g. role that didn't exist in base, mismatched dates). Severity "high".
 5. "format": shape mismatch with the base CV — a section with a different
    number of paragraphs/tables, a renamed section title, an added/removed row.
    Severity "high".
-6. "length": the tailored CV is more than 25% longer or shorter than the base.
+6. "summary_format": the summary line does NOT follow the required template \
+   "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>" — specifically, the \
+   line must START with "En búsqueda de un puesto en " and contain at least \
+   two " · " separators. Also flag if any of the <cat> phrases are verbatim \
+   copied from the job posting or are NOT in Spanish. \
+   Severity "high".
+7. "immutable_changed": any project title (e.g. "Rastreador de Gastos \
+   Automatizado con IA", "KAYLA — Recordatorios...", "AI Personal Agent") or \
+   parenthetical descriptor (e.g. "(Dashboard)", "(Agentic AI · RAG · \
+   Automatización)") that has been reworded. Severity "high".
+8. "length": the tailored CV is more than 25% longer or shorter than the base.
    Severity "low".
-7. "language": output that is NOT Spanish, or that drops Spanish accents.
+9. "language": output that is NOT Spanish, or that drops Spanish accents.
    Severity "high".
 
 If you find NO issues, return an empty issues list. DO NOT invent issues to

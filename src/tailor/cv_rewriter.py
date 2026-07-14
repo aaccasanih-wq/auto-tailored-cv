@@ -80,6 +80,21 @@ def _validate_shape(tailored: Dict[str, Any], base_cv: CVProfile) -> List[str]:
     if "summary" not in tailored or not isinstance(tailored["summary"], str):
         warnings.append("tailored output missing 'summary' string")
 
+    # Summary format rule (only enforced if base CV had the "En búsqueda..." template)
+    base_summary = (base_cv.summary or "").strip()
+    if base_summary.startswith("En búsqueda de un puesto en"):
+        tailored_summary = (tailored.get("summary") or "").strip()
+        if not tailored_summary.startswith("En búsqueda de un puesto en"):
+            warnings.append(
+                "summary must start with 'En búsqueda de un puesto en '"
+                f" (got: {tailored_summary[:80]!r})"
+            )
+        elif tailored_summary.count(" · ") < 2:
+            warnings.append(
+                "summary must have at least two ' · ' separators"
+                f" (got: {tailored_summary!r})"
+            )
+
     expected_titles = [s.title for s in base_cv.sections]
     got_titles = [s.get("title", "") for s in tailored["sections"]]
     if expected_titles != got_titles:
