@@ -1,6 +1,6 @@
 # auto-tailored-cv
 
-> Automatically tailor your résumé for each job you saved on LinkedIn — output `.html` + `.pdf` — without making it look like an obvious keyword-stuffed rewrite.
+> Automatically tailor your resume for each job you saved on LinkedIn — output `.html` + `.pdf` — without making it look like an obvious keyword-stuffed rewrite.
 
 `README in English | [Leer en español](README.es.md)`
 
