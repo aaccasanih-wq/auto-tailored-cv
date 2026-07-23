@@ -28,7 +28,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Dict, List, Optional
+from typing import Any
 
 from src.utils.logging import get_logger
 
@@ -42,14 +42,14 @@ DEFAULT_TIMEOUT_S = 30
 @dataclass
 class StdioMcpConfig:
     command: str
-    args: List[str] = field(default_factory=list)
-    env: Optional[Dict[str, str]] = None
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] | None = None
     # Working directory for the subprocess; defaults to current.
-    cwd: Optional[str] = None
+    cwd: str | None = None
 
 
 class McpError(Exception):
-    def __init__(self, message: str, data: Optional[Any] = None):
+    def __init__(self, message: str, data: Any | None = None):
         super().__init__(message)
         self.message = message
         self.data = data
@@ -66,17 +66,17 @@ class StdioMcpClient:
     def __init__(self, config: StdioMcpConfig, default_timeout_s: int = DEFAULT_TIMEOUT_S):
         self.config = config
         self.default_timeout_s = default_timeout_s
-        self.proc: Optional[asyncio.subprocess.Process] = None
+        self.proc: asyncio.subprocess.Process | None = None
         self._next_id = 1
-        self._pending: Dict[int, asyncio.Future] = {}
-        self._reader_task: Optional[asyncio.Task] = None
-        self._stderr_task: Optional[asyncio.Task] = None
-        self._tools_cache: List[Dict[str, Any]] = []
-        self._server_info: Dict[str, Any] = {}
-        self._capabilities: Dict[str, Any] = {}
+        self._pending: dict[int, asyncio.Future] = {}
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._tools_cache: list[dict[str, Any]] = []
+        self._server_info: dict[str, Any] = {}
+        self._capabilities: dict[str, Any] = {}
 
     @property
-    def tools(self) -> List[Dict[str, Any]]:
+    def tools(self) -> list[dict[str, Any]]:
         return self._tools_cache
 
     async def start(self) -> None:
@@ -146,7 +146,7 @@ class StdioMcpClient:
         except Exception as e:
             log.error("MCP reader crashed: %s", e)
 
-    async def _send_request(self, method: str, params: Any, timeout_s: Optional[int] = None) -> Any:
+    async def _send_request(self, method: str, params: Any, timeout_s: int | None = None) -> Any:
         if self.proc is None or self.proc.stdin is None:
             raise RuntimeError("MCP client not started")
         msg_id = self._next_id
@@ -157,7 +157,7 @@ class StdioMcpClient:
             "method": method,
             "params": params if params is not None else {},
         }
-        fut: "asyncio.Future[Any]" = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
         self._pending[msg_id] = fut
         line = (json.dumps(request) + "\n").encode("utf-8")
         self.proc.stdin.write(line)
@@ -176,7 +176,7 @@ class StdioMcpClient:
         self.proc.stdin.write(line)
         await self.proc.stdin.drain()
 
-    async def initialize(self) -> Dict[str, Any]:
+    async def initialize(self) -> dict[str, Any]:
         result = await self._send_request("initialize", {
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {},
@@ -196,16 +196,16 @@ class StdioMcpClient:
         )
         return result if isinstance(result, dict) else {}
 
-    async def list_tools(self) -> List[Dict[str, Any]]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         result = await self._send_request("tools/list", {})
-        tools: List[Dict[str, Any]] = []
+        tools: list[dict[str, Any]] = []
         if isinstance(result, dict):
             tools = result.get("tools", []) or []
         self._tools_cache = tools
         return tools
 
-    async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None,
-                        timeout_s: Optional[int] = None) -> Dict[str, Any]:
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None,
+                        timeout_s: int | None = None) -> dict[str, Any]:
         result = await self._send_request("tools/call", {
             "name": name,
             "arguments": arguments or {},
@@ -229,9 +229,9 @@ class StdioMcpClient:
             self._stderr_task.cancel()
 
 
-def extract_text_content(call_result: Dict[str, Any]) -> str:
+def extract_text_content(call_result: dict[str, Any]) -> str:
     """Concatenate 'text' portions of a tools/call result.content list."""
-    parts: List[str] = []
+    parts: list[str] = []
     content = call_result.get("content", []) or []
     if not isinstance(content, list):
         return ""

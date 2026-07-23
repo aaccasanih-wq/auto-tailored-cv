@@ -9,14 +9,13 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from rich.console import Console
 from rich.logging import RichHandler
 
 _console = Console()
-_handler: Optional[RichHandler] = None
-_configured_level: Optional[str] = None
+_handler: RichHandler | None = None
+_configured_level: str | None = None
 
 
 def configure_logging(level: str = "INFO") -> None:

@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest import mock
 
-import pytest
-
-from src.render import pdf_converter
-from src.render.pdf_converter import (
+from src.render.legacy import pdf_converter
+from src.render.legacy.pdf_converter import (
     ConversionResult,
     convert_docx_to_pdf,
     find_soffice,

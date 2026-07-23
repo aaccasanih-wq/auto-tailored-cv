@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
-
+from pathlib import Path
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MULTIPLE_DASH_RE = re.compile(r"-{2,}")
@@ -33,16 +33,32 @@ def slugify(text: str, max_length: int = 60) -> str:
 
 
 def job_folder_name(title: str, company: str, when: date | None = None) -> str:
-    """Build the date-prefixed folder name for a tailored CV.
+    """Build the job folder name (without date) for a tailored CV.
 
-    Format: YYYY-MM-DD_<title-slug>_<company-slug>
-    Example: 2026-07-13_senior-data-engineer_acme
+    Format: <title-slug>_<company-slug>
+    Example: senior-data-engineer_acme
+
+    The date is handled separately by :func:`job_output_path`, which nests
+    the job folder under a date directory: output/<YYYY-MM-DD>/<job_folder>.
     """
-    when = when or date.today()
-    date_prefix = when.isoformat()
     title_slug = slugify(title, max_length=50)
     company_slug = slugify(company, max_length=30)
-    return f"{date_prefix}_{title_slug}_{company_slug}"
+    return f"{title_slug}_{company_slug}"
 
 
-__all__ = ["slugify", "job_folder_name"]
+def job_output_path(
+    output_dir: Path,
+    title: str,
+    company: str,
+    when: date | None = None,
+) -> Path:
+    """Resolve the full output path for a tailored CV.
+
+    Layout: ``<output_dir>/<YYYY-MM-DD>/<title-slug>_<company-slug>``
+    Example: ``output/2026-07-13/senior-data-engineer_acme``
+    """
+    when = when or date.today()
+    return Path(output_dir) / when.isoformat() / job_folder_name(title, company)
+
+
+__all__ = ["slugify", "job_folder_name", "job_output_path"]

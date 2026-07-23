@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.config import settings
 from src.profile.cv_reader import CVProfile
@@ -26,9 +26,9 @@ SEVERITIES = {"high", "medium", "low"}
 @dataclass
 class EvaluationResult:
     verdict: str            # "pass" | "needs_repair" | "fail"
-    issues: List[Dict[str, Any]] = field(default_factory=list)
+    issues: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
-    raw_response: Optional[LLMResponse] = None
+    raw_response: LLMResponse | None = None
 
     @property
     def needs_repair(self) -> bool:
@@ -39,12 +39,12 @@ def evaluate(
     client: LLMClient,
     base_cv: CVProfile,
     job: JobInfo,
-    tailored_json: Dict[str, Any],
-    model: Optional[str] = None,
+    tailored_json: dict[str, Any],
+    model: str | None = None,
     temperature: float = 0.1,
 ) -> EvaluationResult:
     """Run the evaluator pass. Always returns an EvaluationResult (possibly with empty issues)."""
-    model = model or settings.opencode_model_evaluator
+    model = model or settings.llm_model_evaluator
     system, user = build_evaluator_prompt(base_cv, job, tailored_json)
     log.info("evaluate: model=%s", model)
     response = client.chat(
@@ -82,7 +82,9 @@ def parse_evaluation(response: LLMResponse) -> EvaluationResult:
             raw_response=response,
         )
     issues = data.get("issues", []) or []
-    verdict = data.get("overall_verdict", "needs_repair")
+    # The prompt asks for `overall_verdict`, but some models emit `verdict`
+    # instead. Accept either to avoid silently defaulting to "needs_repair".
+    verdict = data.get("overall_verdict") or data.get("verdict") or "needs_repair"
     if verdict not in {"pass", "needs_repair", "fail"}:
         verdict = "needs_repair"
     # Normalize severities to lowercase

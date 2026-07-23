@@ -30,7 +30,16 @@ dev = [
 auto-tailored-cv = "run:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = [
+    "src",
+    "src.extract",
+    "src.profile",
+    "src.render",
+    "src.render.legacy",
+    "src.review",
+    "src.tailor",
+    "src.utils",
+]
 
 [tool.ruff]
 line-length = 100

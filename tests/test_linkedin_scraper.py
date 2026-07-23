@@ -12,11 +12,7 @@ import pytest
 from src.extract.linkedin_scraper import (
     JOB_URL_RE,
     SavedJob,
-    _extract_description,
-    _extract_company,
-    _extract_heading_h1,
     _extract_job_urls,
-    _extract_location,
     _parse_job_detail,
 )
 

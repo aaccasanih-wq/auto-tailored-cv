@@ -25,7 +25,7 @@ paragraph's first run, inheriting its formatting.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from docx import Document
 from docx.document import Document as _Document
@@ -33,10 +33,45 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
-from src.profile.cv_reader import iter_block_items, _is_heading
 from src.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Legacy helpers that used to live in src.profile.cv_reader (docx parsing).
+# Kept here so the legacy docx writer remains self-contained and does NOT
+# depend on the new HTML-based cv_reader.
+# ---------------------------------------------------------------------------
+
+
+def iter_block_items(parent):
+    """Yield Paragraph and Table objects in document order (docx only)."""
+    from docx.oxml.table import CT_Tbl
+    from docx.table import Table, _Cell
+    from docx.text.paragraph import Paragraph
+
+    if isinstance(parent, _Document):
+        parent_elm = parent.element.body
+    elif isinstance(parent, _Cell):
+        parent_elm = parent._tc
+    else:
+        raise ValueError("unsupported parent type")
+    for child in parent_elm.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, parent)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, parent)
+
+
+def _is_heading(text: str) -> bool:
+    """Legacy heuristic: an all-caps line is a section heading (CV convention)."""
+    import re
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if not re.search(r"[A-Z]", stripped):
+        return False
+    return not re.search(r"[a-zà-ÿ]", stripped)
 
 
 # --------------------------------------------------------------------------- #
@@ -77,7 +112,7 @@ def _set_cell_text(cell: _Cell, new_text: str) -> None:
 
 def write_tailored_docx(
     base_cv_path: Path,
-    tailored_json: Dict[str, Any],
+    tailored_json: dict[str, Any],
     output_path: Path,
 ) -> Path:
     """Produce a tailored .docx at `output_path` based on `base_cv_path`.
@@ -132,7 +167,7 @@ def write_tailored_docx(
                     # the read-back summary isn't bloated with leftover text.
                     _set_paragraph_text(block, "")
             else:
-                section_data: Optional[Dict[str, Any]] = (
+                section_data: dict[str, Any] | None = (
                     sections[section_idx] if section_idx < len(sections) else None
                 )
                 paragraphs = (section_data or {}).get("paragraphs", []) or []
@@ -162,7 +197,7 @@ def write_tailored_docx(
     return output_path
 
 
-def _replace_table(table: Table, grid: List[List[str]]) -> None:
+def _replace_table(table: Table, grid: list[list[str]]) -> None:
     """Replace each cell in `table` with the text in `grid`, by position."""
     rows = list(table.rows)
     if len(rows) != len(grid):

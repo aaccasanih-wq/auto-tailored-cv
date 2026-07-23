@@ -1,0 +1,240 @@
+/* ============================================================
+   cv_style.css
+   Hoja de estilos compartida por base_cv.html y por la plantilla
+   de render (templates/cv_template.html). Replica el estilo del
+   base_cv.docx original: Calibri, 10.5pt cuerpo, 18pt nombre,
+   márgenes tipo carta (Letter), tablas de layout sin bordes,
+   tabla de habilidades con grid visible.
+   ============================================================ */
+
+@page {
+  size: Letter;
+  margin: 0.6in 0.75in 0.58in 0.75in;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Calibri", "Carlito", Arial, sans-serif;
+  font-size: 10.5pt;
+  color: #000000;
+  line-height: 1.28;
+  max-width: 8.5in;
+  margin: 0 auto;
+  padding: 0.6in 0.75in 0.58in 0.75in;
+  background: #ffffff;
+}
+
+/* ---------- Encabezado ---------- */
+
+.header {
+  text-align: center;
+  border-bottom: 1.5pt solid #000000;
+  padding-bottom: 4pt;
+  margin-bottom: 6pt;
+}
+
+.name {
+  font-size: 18pt;
+  font-weight: bold;
+  letter-spacing: 0.3pt;
+  margin: 0 0 3pt 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.contact-line {
+  font-size: 10.5pt;
+  margin: 0 0 2pt 0;
+  text-align: center;
+}
+
+.contact-line a {
+  color: #000000;
+  text-decoration: underline;
+}
+
+.tagline {
+  font-style: italic;
+  font-size: 10.5pt;
+  margin: 0;
+  text-align: center;
+}
+
+/* ---------- Secciones ---------- */
+
+.section {
+  margin-top: 8pt;
+}
+
+.section-title {
+  font-weight: bold;
+  font-size: 10.5pt;
+  text-transform: uppercase;
+  border-bottom: 1pt solid #000000;
+  padding-bottom: 1pt;
+  margin: 0 0 4pt 0;
+}
+
+/* ---------- Filas de layout (Puesto/Institución -- Fecha) ---------- */
+/* Reemplaza las "tablas invisibles" de Word por flexbox: mismo
+   resultado visual, cero dependencia de bordes ocultos que se
+   descuadran al convertir a PDF. */
+
+.entry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8pt;
+  margin-top: 5pt;
+}
+
+.entry-title {
+  font-style: italic;
+  font-weight: bold;
+}
+
+.entry-date {
+  white-space: nowrap;
+  font-style: normal;
+  font-weight: normal;
+}
+
+.entry-subtitle {
+  font-style: italic;
+  margin: 1pt 0 2pt 0;
+}
+
+/* ---------- Bullets ---------- */
+
+ul.bullets {
+  margin: 2pt 0 0 0;
+  padding-left: 16pt;
+}
+
+ul.bullets li {
+  margin-bottom: 2pt;
+  text-align: justify;
+}
+
+/* ---------- Proyectos ---------- */
+
+.project-block {
+  margin-top: 6pt;
+}
+
+.project-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8pt;
+}
+
+.project-title {
+  font-weight: bold;
+}
+
+.project-links {
+  font-style: normal;
+  margin: 1pt 0 2pt 0;
+}
+
+.project-links a {
+  color: #000000;
+  text-decoration: underline;
+}
+
+.project-links .sep {
+  text-decoration: none;
+  margin: 0 3pt;
+}
+
+/* ---------- Tabla de Habilidades & Herramientas ---------- */
+
+table.skills-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4pt;
+  font-size: 10pt;
+}
+
+table.skills-table td {
+  border: 0.75pt solid #000000;
+  padding: 3pt 6pt;
+  vertical-align: top;
+}
+
+table.skills-table td.skill-label {
+  font-weight: bold;
+  width: 18%;
+  white-space: nowrap;
+}
+
+/* ---------- Marca de texto editable (solo aplica en el HTML
+   generado por el pipeline para el paso de revisión; en
+   base_cv.html no tiene efecto visual porque no se activa JS) ---------- */
+
+[contenteditable="true"]:hover {
+  outline: 1px dashed #999999;
+  outline-offset: 2px;
+}
+[contenteditable="true"]:focus {
+  outline: 1.5px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* ---------- Botón "Guardar y generar PDF" del paso de revisión ---------- */
+
+#save-button {
+  position: fixed;
+  bottom: 14pt;
+  right: 14pt;
+  z-index: 9999;
+  font-family: "Calibri", "Carlito", Arial, sans-serif;
+  font-size: 10pt;
+  font-weight: bold;
+  padding: 6pt 12pt;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6pt;
+  cursor: pointer;
+  box-shadow: 0 2pt 6pt rgba(0, 0, 0, 0.25);
+}
+
+#save-button:hover {
+  background: #1d4ed8;
+}
+
+#save-button:disabled {
+  background: #9ca3af;
+  cursor: default;
+}
+
+/* ---------- Ajustes para impresión / generación de PDF ---------- */
+
+@media print {
+  body {
+    padding: 0;
+  }
+  /* El botón de revisión NO debe aparecer en el PDF final. */
+  #save-button {
+    display: none !important;
+  }
+  /* Evitar cortar UNA entrada a la mitad (p.ej. un bullet partido entre
+     páginas), pero SIN forzar que la sección completa salte de página
+     si no cabe entera — eso es lo que dejaba espacio en blanco al final
+     de la página anterior. El corte de página se decide entrada por
+     entrada, no sección por sección. */
+  .entry-block,
+  .project-block {
+    break-inside: avoid;
+  }
+  /* Evitar que un título de sección quede solo al final de una página,
+     separado de su contenido. */
+  .section-title {
+    break-after: avoid;
+  }
+}

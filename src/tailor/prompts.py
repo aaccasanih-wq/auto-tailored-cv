@@ -13,15 +13,56 @@ Anti-suspicion strategy:
     that wasn't in the base CV (hallucination) and against the job posting for
     any verbatim phrase (plagiarism).
   - Repair only touches what the evaluator flagged.
+
+URL/hyperlink protection:
+  - The base CV's hyperlinks are sent to the LLM ONLY as visible text,
+    never as URLs. The prompt explicitly says: the `url` field is out of
+    scope; do not modify or invent URLs.
+  - After the tailor returns, the original `enlaces` arrays are re-injected
+    (`tailor_cv._reinject_enlaces`) so `analysis.json` keeps the protected
+    URLs byte-identical to the base CV.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-from src.profile.cv_reader import CVProfile
+from src.profile.cv_reader import CVProfile, CVSection
+
+# --------------------------------------------------------------------------- #
+# Helpers                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _strip_enlaces_for_llm(base_cv: CVProfile) -> dict[str, Any]:
+    """Return a JSON-serializable view of base_cv suitable for the LLM:
+    same shape as `CVProfile.to_dict()` but WITHOUT any `enlaces` /
+    `contact_enlaces` URL arrays.
+
+    The LLM still sees the visible link text (e.g. the descriptor
+    "(Dashboard)" or the contact line "Sitio web" / "Mis Proyectos") which
+    are immutable — it just never sees the underlying URLs.
+    """
+    def section_view(s: CVSection) -> dict[str, Any]:
+        d = s.to_dict()
+        for entry in d.get("entries", []) or []:
+            entry.pop("enlaces", None)
+        return d
+
+    return {
+        "name": base_cv.name,
+        "contact": base_cv.contact,
+        # Deliberately omitted: contact_enlaces (URLs protected)
+        "summary": base_cv.summary,
+        "sections": [section_view(s) for s in base_cv.sections],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# JobInfo                                                                     #
+# --------------------------------------------------------------------------- #
 
 
 @dataclass
@@ -53,115 +94,113 @@ class JobInfo:
 
 
 TAILOR_SYSTEM = """\
-You are an expert CV editor who helps a job-seeker naturally align their existing
-résumé to a specific job posting, WITHOUT fabricating anything.
+You are an expert CV editor who aligns a candidate's existing résumé to a job
+posting WITHOUT fabricating anything. The candidate's CV is Spanish; your
+output MUST also be in Spanish with all accents preserved (á é í ó ú ñ ¿ ¡).
 
 CRITICAL RULES (any violation is a hard failure):
-- The candidate's CV is in Spanish. Your output MUST also be in Spanish.
 - DO NOT invent skills, tools, projects, jobs, education, certifications, or
-  achievements that are NOT present in the BASE CV provided below.
-- DO NOT change dates, periods (e.g. "2021 – 2026"), company names, university
-  names, role titles, or any other FACT. Facts are immutable.
+  achievements that are NOT in the BASE CV.
+- DO NOT change dates, company names, university names, role titles, project
+  titles, or any other FACT.
 - DO NOT copy phrases verbatim from the job posting. Paraphrase in the
-  candidate's own voice. If the job posting says "experiencia liderando equipos
-  ágiles", do NOT echo those words; restate the candidate's real experience that
-  maps to it.
-- DO NOT add new bullet points. You may REORDER existing bullets and REPHRASE
-  them, but the NUMBER of bullets per experience/project must stay the same.
-- DO NOT add or remove sections. The output MUST contain exactly the same
-  sections (titles) as the base CV, in the same order.
+  candidate's own voice.
 - DO NOT pad with buzzwords ("liderazgo transformador", "visión estratégica
-  360°", etc.) unless they're evidenced by the base CV.
-- Keep the total length close to the base CV. Aim for ±10% of original length.
+  360°") unless evidenced by the base CV.
+- Keep total length within ±10% of the base CV.
 
-IMMUTABLE LINES (return byte-for-byte unchanged):
-- Project titles such as "Rastreador de Gastos Automatizado con IA", \
-"KAYLA — Recordatorios automáticos de citas y medicamentos", "AI Personal \
-Agent". These are static headers per project and must NOT be reworded.
-- Project parenthetical descriptors such as "(Dashboard)", \
-"(Landing Page · Dashboard)", "(Agentic AI · RAG · Automatización)". These \
-mark the project type and must remain verbatim.
-- The contact line is also immutable (name + phone + email), and so are the \
-section headings.
+IMMUTABLE FIELDS (return byte-for-byte unchanged):
+- `name`, `contact`, every section `title` and `kind`.
+- For every entry: `titulo`, `fecha`, `subtitulo`.
+- URLs are protected: the base CV is given to you WITHOUT `url` arrays; your
+  output MUST likewise OMIT `enlaces` (the orchestrator re-injects URLs
+  post-rewrite). DO NOT invent or echo any URL anywhere.
+- For experiencia/educacion sections: also keep `descriptor` byte-for-byte,
+  and DO NOT add or remove entries (same count, same order, same bullet
+  count per entry ± split/merge tolerance).
 
-WHAT YOU CAN DO (tailoring license):
-- PARAPHRASE existing bullets to surface relevance — same underlying FACTS,
-  reworded vocabulary that resonates with this job's language. Aggressive \
-  paraphrasing is allowed and encouraged, as long as facts stay true.
-- REORDER bullets within an experience/project so the most relevant ones \
-  appear first.
-- REORDER the comma-separated skill lists inside the skills table rows so the \
-  skills most desired by this job come first (still using only real skills).
-- COMPRESS or EXPAND bullets within reason. If the job emphasizes stakeholder \
-  reporting, expand a generic "Elaboré reportes" bullet into more specific \
-  framing of the same underlying experience (still truthful, no new facts).
-- TIGHTEN or sharpen language; do not rewrite for the sake of rewriting.
+TAILORING LICENSE (what you CAN do):
+- PARAPHRASE existing bullets to surface relevance — same underlying facts,
+  reworded vocabulary that resonates with this job's language. Aggressive
+  paraphrasing is encouraged as long as facts stay true.
+- REORDER bullets within an entry (most relevant first).
+- SPLIT a long bullet into several shorter ones when clearer; do not invent
+  facts. MERGE two bullets into one when the result is tighter.
+- REORDER the comma-separated skill lists inside the skills table rows so
+  the skills most desired by this job come first (only real skills).
+
+PROJECT SECTION (kind="proyectos" only) — FULL LICENSE over the entries list:
+1. REORDER projects so the most relevant to this job appear first.
+2. REMOVE a project entirely if it adds nothing to this application (omit its
+   entry object). DO NOT invent projects — every project in your output must
+   exist in the base CV.
+3. FIRST bullet of each project MUST describe WHAT the project is / does /
+   solves; subsequent bullets carry implementation details.
+4. DESCRIPTOR field (the parenthetical above project bullets, e.g.
+   "(Dashboard)", "(Agentic AI · RAG · Automatización)"): you MAY keep it as-is,
+   MAY modify its content (only using real aspects evidenced in the bullets),
+   or MAY set it to empty string "" if it adds no value. NEVER leave dangling
+   empty parentheses "()".
 
 SUMMARY FORMAT (HARD RULE):
-The base CV summary line has this exact shape:
+The summary MUST follow this exact template:
   "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>"
-where <cat1>, <cat2>, <cat3> are 2-to-4-word phrases separated by " · " \
-(mid-dot with one space on each side).
-Your tailored summary MUST preserve this exact template. Only replace <cat1>, \
-<cat2>, <cat3> with phrases that:
-  1. Reflect the most relevant skills/areas for THIS job posting.
-  2. Are grounded in the candidate's demonstrated experience (don't invent).
-  3. Are in Spanish, 2-4 words each.
-  4. Are NOT verbatim copies of phrases from the job posting.
+where each <cat> is a 2-4 word Spanish phrase, grounded in the candidate's
+demonstrated experience, and NOT a verbatim copy from the job posting.
+Good: "En búsqueda de un puesto en Ingeniería de Datos · Análisis · \
+Automatización de Procesos"
+Bad: "Estudiante de Economía con experiencia en…" (breaks the opener), or
+echoing "Snowflake" / "dbt" verbatim from the posting.
 
-GOOD examples (format preserved):
-- Data Engineer: "En búsqueda de un puesto en Ingeniería de Datos · \
-Análisis de Datos · Automatización de Procesos"
-- Business Practitioner: "En búsqueda de un puesto en Analítica de Negocios · \
-Reportes Financieros · Visualización de Datos"
-- Process Transformation Asst: "En búsqueda de un puesto en Transformación de \
-Procesos · Mejora Continua · Análisis Operativo"
-BAD examples (format breaks):
-- "Estudiante de Economía con experiencia en..." (breaks the "En búsqueda..." \
-opening)
-- Adds "Snowflake" / "dbt" verbatim from the job posting
-
-OUTPUT FORMAT — return a single JSON object with this exact schema:
+OUTPUT FORMAT — return ONLY a single JSON object with this schema (no markdown,
+no commentary). `enlaces` is intentionally absent; the orchestrator re-injects
+those URLs post-rewrite:
 
 {
-  "summary": "<En búsqueda de un puesto en <cat1> · <cat2> · <cat3>>",
+  "summary": "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>",
   "sections": [
     {
-      "title": "<SECTION TITLE — MUST match the input, do not rename>",
-      "paragraphs": ["<paragraph text, in Spanish, MAY be reworded>"],
-      "tables": [
-        [["cell text", "cell text", ...], ["row 2", ...]]
-      ]
+      "title": "<SECTION TITLE — copy from input>",
+      "kind": "<educacion|experiencia|proyectos|habilidades — copy from input>",
+      "entries": [
+        {
+          "titulo": "<immutable>", "fecha": "<immutable>",
+          "subtitulo": "<immutable>", "descriptor": "<see PROJECT rules>",
+          "bullets": ["<Spanish, MAY be reworded/split/merged>"]
+        }
+      ],
+      "table": [["<label>", "<value>"]]
     }
   ]
 }
 
 Rules for the JSON:
-- Preserve the shape of each section: same paragraph count, same number of
-  tables, same table dimensions. The docx renderer substitutes cell-by-cell.
-- Cells that contain pure facts (dates, university name, company name, role
-  title) MUST be returned byte-for-byte unchanged. Cells that contain prose
-  (bullet text in a single-cell table, etc.) MAY be reworded.
-- Cells that contain project titles or parenthetical descriptors MUST be returned
-  byte-for-byte unchanged (see IMMUTABLE LINES above).
-- Preserve all Spanish accents (á é í ó ú ñ ¿ ¡).
-- Return ONLY the JSON object, no commentary, no markdown fences.
+- "habilidades": `entries` empty; `table` matches the input shape (same rows,
+  same cells per row). First column (skill label) byte-for-byte; value cells
+  MAY be reordered/rephrased using only skills present in the base CV.
+- "educacion" / "experiencia": `table` empty; entry list mirrors the input
+  (same count, same order, same bullet count ± split/merge).
+- "proyectos": `table` empty; entry list MAY be shorter than base (if you
+  removed irrelevant projects) and MAY be reordered. Never invent projects.
 """
 
 
 def build_tailor_prompt(
     base_cv: CVProfile,
     job: JobInfo,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Build (system, user) for the tailor pass."""
+    base_for_llm = _strip_enlaces_for_llm(base_cv)
     user = (
         "BASE CV (the candidate's real, original résumé — everything you output "
-        "must remain factually consistent with this):\n\n"
-        f"{base_cv.to_json()}\n\n"
+        "must remain factually consistent with this; URLs are intentionally "
+        "absent — DO NOT invent or modify any URL):\n\n"
+        f"{json.dumps(base_for_llm, ensure_ascii=False, indent=2)}\n\n"
         "JOB TO ALIGN TOWARDS:\n\n"
         f"{job.to_markdown()}\n\n"
-        "Produce the tailored CV JSON following every rule in the system prompt. "
-        "Remember: NO new facts, NO verbatim copying from the job, same shape as base."
+        "Produce the tailored CV JSON following every rule in the system "
+        "prompt. Remember: NO new facts, NO verbatim copying from the job, "
+        "same shape as base, and 'enlaces' arrays must be OMITTED."
     )
     return TAILOR_SYSTEM, user
 
@@ -188,8 +227,12 @@ Your job is to spot problems. Look explicitly for these issue types:
    making the bullet read unnaturally. Severity "medium".
 4. "incongruity": a claim that contradicts another claim in the tailored CV
    (e.g. role that didn't exist in base, mismatched dates). Severity "high".
-5. "format": shape mismatch with the base CV — a section with a different
-   number of paragraphs/tables, a renamed section title, an added/removed row.
+5. "format": shape mismatch with the base CV — a renamed section title, \
+   a skills-table row/cell count mismatch, or an added entry that did \
+   NOT exist in the base CV. NOTE: for "proyectos" sections, having FEWER \
+   entries than the base (projects removed for irrelevance) or a DIFFERENT \
+   ORDER is ALLOWED and must NOT be flagged. For "experiencia" / \
+   "educacion" sections, a different entry count or order IS a format issue. \
    Severity "high".
 6. "summary_format": the summary line does NOT follow the required template \
    "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>" — specifically, the \
@@ -197,14 +240,23 @@ Your job is to spot problems. Look explicitly for these issue types:
    two " · " separators. Also flag if any of the <cat> phrases are verbatim \
    copied from the job posting or are NOT in Spanish. \
    Severity "high".
-7. "immutable_changed": any project title (e.g. "Rastreador de Gastos \
-   Automatizado con IA", "KAYLA — Recordatorios...", "AI Personal Agent") or \
-   parenthetical descriptor (e.g. "(Dashboard)", "(Agentic AI · RAG · \
-   Automatización)") that has been reworded. Severity "high".
-8. "length": the tailored CV is more than 25% longer or shorter than the base.
+7. "immutable_changed": any project TITLE, dates, company names, role titles, \
+   or university names that have been reworded. Severity "high". NOTE: the \
+   "descriptor" field (parenthetical above project bullets) is EDITABLE for \
+   the proyectos section and must NOT be flagged unless it was set to empty \
+   parentheses "()" instead of empty string "", or unless its content invents \
+   facts not evidenced by the base CV.
+8. "bullet_order": for proyectos entries, the first bullet should describe WHAT \
+   the project is/does (the "what & why" bullet), followed by implementation \
+   details. Flag if the first bullet is a detail (e.g. dashboard) rather than \
+   the project description. Severity "medium".
+9. "length": the tailored CV is more than 25% longer or shorter than the base.
    Severity "low".
-9. "language": output that is NOT Spanish, or that drops Spanish accents.
-   Severity "high".
+10. "language": output that is NOT Spanish, or that drops Spanish accents.
+    Severity "high".
+11. "url_tampered": any URL field was invented or modified by the LLM. The
+    tailored JSON should NOT contain `enlaces` at all (the orchestrator
+    re-injects them), so if you see one, flag it as a "high" issue.
 
 If you find NO issues, return an empty issues list. DO NOT invent issues to
 look thorough; an empty list is a valid and common output.
@@ -231,18 +283,41 @@ Return ONLY the JSON, no commentary.
 """
 
 
+def _strip_enlaces_from_tailored(tailored_json: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of the tailored JSON with all `enlaces` arrays
+    removed from section entries.
+
+    The orchestrator re-injects URLs from the base CV AFTER the tailor pass
+    (see cv_rewriter._reinject_enlaces). Those reinjected `enlaces` are purely
+    bookkeeping — they are NOT something the tailor LLM produced. Sending them
+    to the evaluator would make it (correctly) flag `url_tampered` issues that
+    are already handled deterministically. Stripping here gives the evaluator
+    the LLM's actual output, so its attention stays on semantic issues.
+    """
+    import copy
+    out = copy.deepcopy(tailored_json)
+    for s in out.get("sections", []) or []:
+        for e in s.get("entries", []) or []:
+            if isinstance(e, dict):
+                e.pop("enlaces", None)
+    return out
+
+
 def build_evaluator_prompt(
     base_cv: CVProfile,
     job: JobInfo,
-    tailored_json: Dict[str, Any],
-) -> Tuple[str, str]:
-    user_parts: List[str] = []
+    tailored_json: dict[str, Any],
+) -> tuple[str, str]:
+    # Strip reinjected enlaces so the evaluator judges what the tailor LLM
+    # actually emitted, not the orchestrator's protected bookkeeping.
+    tailored_view = _strip_enlaces_from_tailored(tailored_json)
+    user_parts: list[str] = []
     user_parts.append("=== BASE CV (ground truth) ===")
-    user_parts.append(base_cv.to_json())
+    user_parts.append(json.dumps(_strip_enlaces_for_llm(base_cv), ensure_ascii=False, indent=2))
     user_parts.append("\n=== JOB POSTING ===")
     user_parts.append(job.to_markdown())
     user_parts.append("\n=== TAILORED CV (to be reviewed) ===")
-    user_parts.append(json.dumps(tailored_json, ensure_ascii=False, indent=2))
+    user_parts.append(json.dumps(tailored_view, ensure_ascii=False, indent=2))
     user_parts.append(
         "\nReturn the evaluation JSON per the system prompt. Be precise when "
         "quoting; quotes must be exact text that appears in the tailored CV."
@@ -268,18 +343,31 @@ JSON schema as the tailored CV:
 {
   "summary": "...",
   "sections": [
-    {"title": "...", "paragraphs": [...], "tables": [[["cell", ...], ...]]}
+    {
+      "title": "...",
+      "kind": "...",
+      "entries": [{"titulo": "...", "fecha": "...",
+        "subtitulo": "...", "descriptor": "...",
+        "bullets": ["..."]}],
+      "table": [["label", "value"]]
+    }
   ]
 }
 
 Hard rules:
-- The output MUST have the SAME shape as the tailored CV: same sections, same
-  paragraph counts, same table dimensions. Only the text content changes.
+- The output MUST have the SAME shape as the tailored CV: same sections,
+  same table dimensions. For "experiencia" / "educacion" sections, same
+  entry count and bullet count. For "proyectos" sections, the same entry
+  list as the tailored CV (do NOT add back projects the tailor removed).
+  Only the text content changes, plus whatever the evaluator flagged.
+- `enlaces` arrays must be OMITTED (URLs are protected and re-injected by
+  the orchestrator). DO NOT invent or modify URLs.
 - A "hallucination" fix means removing the fabricated claim or replacing it
   with what the base CV actually says — never invent a different alternative.
 - A "verbatim_copy" fix means paraphrasing the phrase in the candidate's own
   voice. Never just synonym-swap one or two words.
-- A "format" fix means restoring the original shape to match the base CV.
+- A "format" fix means restoring the original shape to match the base CV
+  (for experiencias/educacion only; proyectos is flexible).
 - DO NOT change anything the evaluator did not flag.
 - Output MUST be in Spanish with proper accents.
 - Return ONLY the JSON, no commentary.
@@ -288,19 +376,19 @@ Hard rules:
 
 def build_repair_prompt(
     base_cv: CVProfile,
-    tailored_json: Dict[str, Any],
-    issues: List[Dict[str, Any]],
-) -> Tuple[str, str]:
-    user_parts: List[str] = []
+    tailored_json: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> tuple[str, str]:
+    user_parts: list[str] = []
     user_parts.append("=== BASE CV (ground truth) ===")
-    user_parts.append(base_cv.to_json())
+    user_parts.append(json.dumps(_strip_enlaces_for_llm(base_cv), ensure_ascii=False, indent=2))
     user_parts.append("\n=== TAILORED CV (current, with issues) ===")
     user_parts.append(json.dumps(tailored_json, ensure_ascii=False, indent=2))
     user_parts.append("\n=== ISSUES TO FIX (only these) ===")
     user_parts.append(json.dumps(issues, ensure_ascii=False, indent=2))
     user_parts.append(
         "\nReturn the corrected tailored CV JSON following every rule. Keep the "
-        "same shape as the input tailored CV."
+        "same shape as the input tailored CV. Omit 'enlaces' (URLs are protected)."
     )
     return REPAIR_SYSTEM, "\n".join(user_parts)
 

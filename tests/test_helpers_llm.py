@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from src.tailor.llm_client import LLMClient, LLMResponse
 
 
 class StubLLMClient(LLMClient):
     """Returns prepared responses in sequence; bypasses real network calls."""
 
-    def __init__(self, responses: List[LLMResponse]):  # noqa: D401
+    def __init__(self, responses: list[LLMResponse]):  # noqa: D401
         # Skip the parent constructor on purpose (no API key needed).
         self._base_url = "stub"
         self._responses = list(responses)

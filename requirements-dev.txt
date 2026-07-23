@@ -2,3 +2,6 @@
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 ruff>=0.5.0
+# Legacy --legacy-docx path uses python-docx + LibreOffice; new pipeline
+# doesn't need these. Installed for backwards compatibility and legacy tests.
+python-docx>=1.1.0

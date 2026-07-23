@@ -1,8 +1,9 @@
 """Tests for src/utils/slugify.py"""
 
 from datetime import date
+from pathlib import Path
 
-from src.utils.slugify import slugify, job_folder_name
+from src.utils.slugify import job_folder_name, job_output_path, slugify
 
 
 class TestSlugify:
@@ -38,21 +39,41 @@ class TestSlugify:
 
 class TestJobFolderName:
     def test_basic(self):
-        when = date(2026, 7, 13)
-        result = job_folder_name("Senior Data Engineer", "Acme", when=when)
-        assert result == "2026-07-13_senior-data-engineer_acme"
+        result = job_folder_name("Senior Data Engineer", "Acme")
+        assert result == "senior-data-engineer_acme"
 
     def test_includes_company_slug(self):
-        when = date(2026, 1, 1)
-        result = job_folder_name("Backend", "Globant LLC", when=when)
-        assert result.startswith("2026-01-01_backend_globant-llc")
+        result = job_folder_name("Backend", "Globant LLC")
+        assert result.startswith("backend_globant-llc")
 
-    def test_date_default_today(self):
-        result = job_folder_name("X", "Y")
-        # YYYY-MM-DD prefix must be present
-        assert len(result.split("_")[0]) == 10
+    def test_ignores_when_arg(self):
+        # job_folder_name no longer prefixes the date; when is accepted for
+        # backward-compat but does not affect the result.
+        a = job_folder_name("X", "Y", when=date(2026, 1, 1))
+        b = job_folder_name("X", "Y", when=date(2026, 7, 13))
+        assert a == b == "x_y"
 
     def test_handles_empty_company(self):
-        when = date(2026, 7, 13)
-        result = job_folder_name("Dev", "", when=when)
-        assert result == "2026-07-13_dev_untitled"
+        result = job_folder_name("Dev", "")
+        assert result == "dev_untitled"
+
+
+class TestJobOutputPath:
+    def test_nests_under_date_dir(self):
+        out = Path("output")
+        p = job_output_path(out, "Senior Data Engineer", "Acme", when=date(2026, 7, 13))
+        assert p == Path("output") / "2026-07-13" / "senior-data-engineer_acme"
+
+    def test_defaults_to_today(self):
+        p = job_output_path(Path("output"), "X", "Y")
+        # Last component is the job folder, parent is a YYYY-MM-DD dir.
+        assert p.parent.parent == Path("output")
+        assert len(p.parent.name.split("-")) == 3
+
+    def test_handles_empty_company(self):
+        p = job_output_path(Path("output"), "Dev", "", when=date(2026, 7, 13))
+        assert p.name == "dev_untitled"
+
+    def test_accepts_str_output_dir(self):
+        p = job_output_path("output", "Dev", "Acme", when=date(2026, 7, 13))
+        assert p == Path("output") / "2026-07-13" / "dev_acme"

@@ -1,14 +1,92 @@
-"""Tests for src/render/docx_writer.py — using a real built docx fixture."""
+"""Legacy tests for src/render/legacy/docx_writer.py.
+
+These cover the OLD docx-based pipeline (kept behind `--legacy-docx`). The
+new cv_reader only parses HTML; for these tests we use the legacy helper
+inlined into docx_writer (iter_block_items / _is_heading) to recover the old
+paragraph-and-table schema for assertions.
+
+Auto-skipped if python-docx isn't installed (legacy-only dependency).
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from docx import Document
 
-from src.profile.cv_reader import read_cv
-from src.render.docx_writer import write_tailored_docx, _set_paragraph_text, _set_cell_text
+docx = pytest.importorskip("docx")
+from docx import Document  # type: ignore  # noqa: E402
+from docx.text.paragraph import Paragraph  # type: ignore  # noqa: E402
+
+from src.render.legacy.docx_writer import (  # noqa: E402
+    _is_heading,
+    _set_paragraph_text,
+    iter_block_items,
+    write_tailored_docx,
+)
+
+
+def _read_legacy_docx(path: Path) -> _LegacyProfile:
+    """Read a .docx using the legacy iter_block_items helper and return a
+    minimal profile that mirrors what the OLD cv_reader used to produce for
+    the legacy docx writer. Returns an object with `.name`, `.contact`,
+    `.summary`, and `.sections` (each section having `.title`, `.paragraphs`,
+    `.tables`), so attribute-access assertions stay identical to the pre-migration
+    test."""
+    from docx.table import Table
+    doc = Document(str(path))
+    name = ""
+    contact = ""
+    summary = ""
+    sections: list[_LegacySection] = []
+    current = None
+    name_assigned = False
+    pre_header_lines: list[str] = []
+    for block in iter_block_items(doc):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if _is_heading(text):
+                if not name_assigned:
+                    name = text
+                    name_assigned = True
+                    continue
+                current = _LegacySection(title=text)
+                sections.append(current)
+                continue
+            if current is not None:
+                if text:
+                    current.paragraphs.append(text)
+            else:
+                if text:
+                    pre_header_lines.append(text)
+        elif isinstance(block, Table):
+            grid = [[c.text.strip() for c in row.cells] for row in block.rows]
+            if current is not None:
+                current.tables.append(grid)
+            else:
+                for row in grid:
+                    pre_header_lines.append(" | ".join(c for c in row if c))
+    if len(pre_header_lines) >= 1:
+        contact = pre_header_lines[0]
+    if len(pre_header_lines) >= 2:
+        summary = "\n".join(pre_header_lines[1:])
+    return _LegacyProfile(name=name, contact=contact, summary=summary,
+                          sections=sections)
+
+
+class _LegacySection:
+    def __init__(self, title: str):
+        self.title = title
+        self.paragraphs: list[str] = []
+        self.tables: list[list] = []
+
+
+class _LegacyProfile:
+    def __init__(self, name, contact, summary, sections):
+        self.name = name
+        self.contact = contact
+        self.summary = summary
+        self.sections = sections
 
 
 @pytest.fixture
@@ -76,20 +154,20 @@ class TestWriteTailoredDocx:
             "sections": [],
         }
         write_tailored_docx(base_docx, tailored, out)
-        profile = read_cv(out)
+        profile = _read_legacy_docx(out)
         assert profile.summary == "En búsqueda de un puesto en Data Engineering"
 
     def test_name_unchanged(self, base_docx: Path, tmp_path: Path):
         out = tmp_path / "tailored.docx"
         tailored = {"summary": "", "sections": []}
         write_tailored_docx(base_docx, tailored, out)
-        assert read_cv(out).name == "ALEX SAMPLE CANDIDATE"
+        assert _read_legacy_docx(out).name == "ALEX SAMPLE CANDIDATE"
 
     def test_contact_unchanged(self, base_docx: Path, tmp_path: Path):
         out = tmp_path / "tailored.docx"
         tailored = {"summary": "", "sections": []}
         write_tailored_docx(base_docx, tailored, out)
-        assert "candidate@example.com" in read_cv(out).contact
+        assert "candidate@example.com" in _read_legacy_docx(out).contact
 
     def test_section_paragraph_rewritten(self, base_docx: Path, tmp_path: Path):
         out = tmp_path / "tailored.docx"
@@ -107,7 +185,7 @@ class TestWriteTailoredDocx:
             ],
         }
         write_tailored_docx(base_docx, tailored, out)
-        profile = read_cv(out)
+        profile = _read_legacy_docx(out)
         exp = next(s for s in profile.sections if s.title == "EXPERIENCIA LABORAL")
         assert exp.paragraphs[0] == "Automated invoice validation workflow."
         assert exp.paragraphs[1] == "Extracted data from SAP."
@@ -125,7 +203,7 @@ class TestWriteTailoredDocx:
             ],
         }
         write_tailored_docx(base_docx, tailored, out)
-        profile = read_cv(out)
+        profile = _read_legacy_docx(out)
         hab = next(s for s in profile.sections if s.title == "HABILIDADES & HERRAMIENTAS")
         assert hab.tables[0][0] == ["Python", "Pandas, NumPy, Streamlit, Selenium"]
         assert hab.tables[0][1] == ["Excel", "SAP"]
@@ -175,13 +253,13 @@ class TestWriteTailoredDocx:
             ],
         }
         write_tailored_docx(base_docx, tailored, out)
-        titles = [s.title for s in read_cv(out).sections]
+        titles = [s.title for s in _read_legacy_docx(out).sections]
         assert titles == ["EDUCACIÓN", "EXPERIENCIA LABORAL", "HABILIDADES & HERRAMIENTAS"]
 
     def test_original_file_not_modified(self, base_docx: Path, tmp_path: Path):
-        original_summary = read_cv(base_docx).summary
+        original_summary = _read_legacy_docx(base_docx).summary
         out = tmp_path / "tailored.docx"
         tailored = {"summary": "totally new summary", "sections": []}
         write_tailored_docx(base_docx, tailored, out)
         # The base docx fixture should be unchanged on disk
-        assert read_cv(base_docx).summary == original_summary
+        assert _read_legacy_docx(base_docx).summary == original_summary

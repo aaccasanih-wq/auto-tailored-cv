@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>{{ name }} — CV</title>
+<link rel="stylesheet" href="cv_style.css">
+</head>
+<body>
+
+  <!-- ============ ENCABEZADO ============ -->
+  <div class="header">
+    <div class="header-main">
+      <p class="name">{{ name }}</p>
+      <p class="contact-line">{{ contact_html|safe }}</p>
+      <p class="tagline" contenteditable="true" data-field="summary">{{ summary }}</p>
+    </div>
+  </div>
+
+  {% for section in sections %}
+    {% set si = loop.index %}
+  <div class="section">
+    <p class="section-title">{{ section.title }}</p>
+
+    {% if section.kind == 'habilidades' %}
+      <table class="skills-table">
+        {% for row in section.table %}
+          {% set ri = loop.index0 %}
+        <tr>
+          <td class="skill-label">{{ row[0] }}</td>
+          <td contenteditable="true"
+              data-field="section.{{ si }}.table.{{ ri }}">{{ row[1] if row|length > 1 else '' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+
+    {% elif section.kind == 'educacion' %}
+      {% for entry in section.entries %}
+        {% set ei = loop.index0 %}
+      <div class="entry-block">
+        <div class="entry-row">
+          <span class="entry-title">{{ entry.titulo }}</span>
+          <span class="entry-date">{{ entry.fecha }}</span>
+        </div>
+        {% if entry.subtitulo %}
+        <p class="entry-subtitle" contenteditable="true"
+           data-field="section.{{ si }}.entry.{{ ei }}.subtitulo">{{ entry.subtitulo }}</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+    {% elif section.kind == 'experiencia' %}
+      {% for entry in section.entries %}
+        {% set ei = loop.index0 %}
+      <div class="entry-block">
+        <div class="entry-row">
+          <span class="entry-title">{{ entry.titulo }}</span>
+          <span class="entry-date">{{ entry.fecha }}</span>
+        </div>
+        <ul class="bullets">
+          {% for bullet in entry.bullets %}
+          <li contenteditable="true"
+              data-field="section.{{ si }}.entry.{{ ei }}.bullet.{{ loop.index0 }}">{{ bullet }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+
+    {% elif section.kind == 'proyectos' %}
+      {% for entry in section.entries %}
+        {% set ei = loop.index0 %}
+      <div class="project-block">
+        <div class="project-header">
+          <span class="project-title">{{ entry.titulo }}</span>
+          <span class="entry-date">{{ entry.fecha }}</span>
+        </div>
+        {% set plinks = entry|project_links_html %}
+        {% if plinks %}
+        <p class="project-links">{{ plinks|safe }}</p>
+        {% endif %}
+        <ul class="bullets">
+          {% for bullet in entry.bullets %}
+          <li contenteditable="true"
+              data-field="section.{{ si }}.entry.{{ ei }}.bullet.{{ loop.index0 }}">{{ bullet }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <button id="save-button" onclick="guardarYGenerarPDF()">Guardar y generar PDF</button>
+
+  <script>
+    async function guardarYGenerarPDF() {
+      const btn = document.getElementById('save-button');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Guardando...';
+      try {
+        const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+        const resp = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          body: html,
+        });
+        if (resp.ok) {
+          btn.textContent = '\u2713 Guardado';
+        } else {
+          btn.textContent = '\u2717 Error: ' + (await resp.text());
+          btn.disabled = false;
+        }
+      } catch (e) {
+        btn.textContent = '\u2717 Error: ' + e;
+        btn.disabled = false;
+      }
+      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+    }
+  </script>
+
+</body>
+</html>

@@ -1,18 +1,18 @@
-"""Scrape LinkedIn saved jobs using Browser MCP.
+"""Scrape LinkedIn saved jobs via Playwright MCP (default) or Browser MCP (legacy).
 
-Browser MCP is launched as a local MCP server (NodeJS, via `npx @browsermcp/mcp@latest`)
-plus a Chrome extension that connects your existing logged-in Chrome profile. Our
-code talks to the MCP server over stdio using the minimal JSON-RPC client in
-`src.extract.mcp_stdio`.
+Playwright MCP (`@playwright/mcp`) is preferred over Browser MCP because:
+  - it has native auto-wait (`browser_wait_for`) resolving the historical
+    problem of LinkedIn pages that don't finish loading before the snapshot
+    is captured (the root cause of empty / degenerate descriptions on slow
+    networks);
+  - it supports `--user-data-dir` so the LinkedIn login persists across
+    runs (no manual reconnect each session);
+  - it's the same Chromium build Playwright uses for `pdf_renderer.py`, so
+    there's only one browser to install.
 
-This scraper:
-  1. Launches the MCP subprocess.
-  2. Sends `initialize` + `notifications/initialized`.
-  3. Calls `tools/list` to enumerate available tools.
-  4. Calls `browser_navigate` with `https://www.linkedin.com/my-items/saved-jobs/`.
-  5. Calls `browser_snapshot` and regex-parses the accessibility tree for job URLs.
-  6. For each job URL, navigates and snapshots again, parsing title/company/
-     location/description.
+We keep Browser MCP as an optional fallback (`--scraper browsermcp`) during
+the transition. The transport layer (`src.extract.mcp_stdio`) is unchanged —
+only the launched server and the tool-call sequence differ.
 
 NOTE on LinkedIn TOS: scraping LinkedIn violates their User Agreement. Use this
 for personal purposes at your own risk; see README.md for the disclaimer.
@@ -24,7 +24,7 @@ import asyncio
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from src.config import settings
 from src.extract.mcp_stdio import (
@@ -62,11 +62,10 @@ class SavedJob:
     # The LinkedIn numeric job id, useful as a stable cache key.
     job_id: str = ""
     # Internal: any parse-time warnings (eg. couldn't find description).
-    warnings: List[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        return d
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 # --------------------------------------------------------------------------- #
@@ -74,10 +73,10 @@ class SavedJob:
 # --------------------------------------------------------------------------- #
 
 
-def _extract_job_urls(snapshot_text: str) -> List[str]:
+def _extract_job_urls(snapshot_text: str) -> list[str]:
     """Return the ordered, de-duplicated list of job URLs found in a snapshot."""
     seen: set = set()
-    urls: List[str] = []
+    urls: list[str] = []
     for m in JOB_URL_RE.finditer(snapshot_text):
         job_id = m.group(1) or m.group(2) or ""
         # Normalize URL: prefer the canonical /view/<id>/ form when we have an id.
@@ -92,44 +91,34 @@ def _extract_job_urls(snapshot_text: str) -> List[str]:
     return urls
 
 
-def _strip_yaml_indent(line: str) -> str:
-    return line.lstrip(" -").strip()
-
-
 PAGE_TITLE_RE = re.compile(r'Page Title:\s*(.+?)\s*\|\s*LinkedIn', re.IGNORECASE)
+H1_RE = re.compile(r'heading\s+"([^"]+)"\s*\[level=1\]', re.IGNORECASE)
+H2_RE = re.compile(r'heading\s+"([^"]+)"\s*\[level=2\]', re.IGNORECASE)
 
 
 def _extract_heading_h1(snapshot_text: str) -> str:
     """Extract the job title.
 
-    BrowserMCP v0.1.x snapshots are flat text, not the structured yaml tree
-    that later versions produce. LinkedIn includes the job title in the page
-    <title> tag, rendered by BrowserMCP as the leading line:
-        Page Title: <title> | <company?> | LinkedIn
-    We prefer that. As a fallback we look for the older yaml-tree 'heading' line.
+    BrowserMCP's flat snapshot prepends `Page Title: <title> | LinkedIn`. We
+    prefer that when present. Playwright MCP's `browser_snapshot` returns the
+    yaml accessibility tree directly, so we fall back to the first level=1
+    `heading "..." [level=1]` node, which is the job title in LinkedIn's DOM.
     """
     m = PAGE_TITLE_RE.search(snapshot_text)
     if m:
-        # "Practicante Pro Comercial | apparka" -> take first half
-        # Some titles don't have company; some have only title|LinkedIn
         title_field = m.group(1).strip()
-        # Split on first ' | ' and take the first chunk as the role
         if " | " in title_field:
             return title_field.split(" | ")[0].strip()
         return title_field
-    # Older fallback: yaml tree
-    for line in snapshot_text.splitlines():
-        if "heading" in line and "level=1" in line:
-            m = re.search(r'"([^"]+)"', line)
-            if m:
-                return m.group(1).strip()
+    m2 = H1_RE.search(snapshot_text)
+    if m2:
+        return m2.group(1).strip()
     return ""
 
 
 def _extract_company(snapshot_text: str, title: str) -> str:
-    """Try to extract the company name from the Page Title too — it's the
-    middle component of "<title> | <company> | LinkedIn". If that fails, scan
-    for a /company/<slug>/ link in the snapshot and use the slug.
+    """Try to extract the company name. Prefer Page Title's middle component,
+    then fall back to the first `/company/<slug>/` link in the snapshot.
     """
     m = PAGE_TITLE_RE.search(snapshot_text)
     if m:
@@ -137,7 +126,6 @@ def _extract_company(snapshot_text: str, title: str) -> str:
         parts = title_field.split(" | ")
         if len(parts) >= 2:
             return parts[1].strip()
-    # Fallback: first /company/<slug>/ URL
     cm = re.search(r'linkedin\.com/company/([a-z0-9\-]+)/', snapshot_text, re.IGNORECASE)
     if cm:
         return cm.group(1).replace("-", " ").title()
@@ -148,19 +136,15 @@ def _extract_location(snapshot_text: str) -> str:
     """Try patterns like 'text: Lima, Peru' or 'text: Remote' — short location lines."""
     for line in snapshot_text.splitlines():
         t = line.strip()
-        # Strip leading 'text:' label
         if t.lower().startswith("text:"):
             text = t[5:].strip(' "\'')
         else:
-            # Maybe older tree format
             m = re.match(r'-\s+text\s+"([^"]+)"', t)
             if not m:
                 continue
             text = m.group(1).strip()
         if not text or len(text) > 80:
             continue
-        # Heuristics for a location: contains a comma + 2-3 words, OR words like
-        # 'Remoto', 'Híbrido', 'Presencial', 'Lima', 'Peru', etc.
         if ("Remoto" in text or "Híbrido" in text or "Presencial" in text
             or ("," in text and len(text.split()) <= 5)
             or (text.startswith("Lima"))):
@@ -169,81 +153,54 @@ def _extract_location(snapshot_text: str) -> str:
 
 
 def _extract_description(snapshot_text: str) -> str:
-    """Pull the job description from a BrowserMCP v0.1.x yaml-structured
-    snapshot.
+    """Pull the job description from a yaml-structured accessibility snapshot.
 
     LinkedIn renders the description under:
-        - heading "Acerca del empleo" [level=2] [ref=...]
-    and the description block continues until the next heading of level 2
-    (often "Establecer una alerta para empleos similares", "Información
-    exclusiva sobre <company>...", etc.).
+        - heading "Acerca del empleo" [level=2] (Spanish) OR
+        - heading "About the job" [level=2] (English)
+    and the description block continues until the next level=2 heading.
 
     The block is made of `- paragraph` and `- text:` nodes, with optional
     `- list > listitem` children. We descend through them in document order
     and concatenate, restoring bullets/structure for readability.
-
-    If the structured marker "Acerca del empleo" / "About the job" isn't
-    present, fall back to the earlier flat 'text:' heuristics (still useful
-    when BrowserMCP returns a degenerate snapshot).
     """
-
-    # ---- Structured-yaml branch -------------------------------------------- #
-    marker_phrase_sp = "Acerca del empleo"
-    marker_phrase_en = "About the job"
-    markers = (marker_phrase_sp, marker_phrase_en)
-    marker_idx = -1
+    markers = ("Acerca del empleo", "About the job")
     snapshot_lower = snapshot_text.lower()
+    marker_idx = -1
     for marker in markers:
         idx = snapshot_lower.find(marker.lower())
         if idx != -1:
             marker_idx = idx
             break
     if marker_idx != -1:
-        # Find the end of the marker line.
         line_end = snapshot_text.find("\n", marker_idx)
         if line_end == -1:
             line_end = len(snapshot_text)
         body = snapshot_text[line_end + 1:]
-        # Stop at the next level=2 heading if present.
-        stop_heading_re = re.compile(r'-\s+heading\s+"([^"]+)"\s*\[level=2\]', re.IGNORECASE)
-        m = stop_heading_re.search(body)
+        m = H2_RE.search(body)
         if m:
             body = body[: m.start()]
-        # Now collect all the inner text from this slice. We strip yaml
-        # tree-dash prefixes and 'ref='/'level='/'textbox' decorations, but
-        # preserve the textual payload of paragraph/text/listitem/strong nodes.
-        # We collapse runs that share a paragraph (LinkedIn splits bold+regular
-        # text into many runs).
-        collected: List[str] = []
+        collected: list[str] = []
         for raw in body.splitlines():
             s = raw
-            # Skip pure heading/alert nodes
             if not s.strip():
                 continue
-            # Strip leading dashes and indentation for matching but keep token
             stripped = s.lstrip("- ")
-            # Drop '[ref=...]' or '[level=N]' modifiers right after the tag.
             stripped = re.sub(r'\s*\[ref=[^\]]*\]', '', stripped)
             stripped = re.sub(r'\s*\[level=\d+\]', '', stripped)
-            # Match `- text: <content>` / `- text "content"` / `text: content`
             m2 = re.match(r'^(?:text|paragraph|listitem|strong)\b\s*:?\s*(.*)$', stripped, re.IGNORECASE)
-            content: Optional[str] = None
+            content: str | None = None
             if m2:
                 c = m2.group(1).strip()
-                # Drop trailing [ref=...] modifiers if present
                 c = re.sub(r'\s*\[ref=[^\]]*\]\s*$', '', c)
-                # Strip wrapping quotes
                 c = c.strip(' "\'')
                 if c:
                     content = c
             if content is None:
-                # Maybe `- strong "..." [ref=...]` form
                 m3 = re.match(r'^(?:text|strong|paragraph|listitem)\s+"([^"]+)"', stripped, re.IGNORECASE)
                 if m3:
                     content = m3.group(1).strip()
             if content:
-                # Bullet-ize list items cleanly
-                # Prepend '- ' for listitem rows so the LLM sees bullet structure
                 if re.match(r'^(?:listitem)\b', stripped, re.IGNORECASE):
                     collected.append(f"- {content}")
                 else:
@@ -251,7 +208,7 @@ def _extract_description(snapshot_text: str) -> str:
         if collected:
             return "\n".join(collected).strip()
 
-    # ---- Flat snapshot fallback -------------------------------------------- #
+    # ---- Flat snapshot fallback (BrowserMCP) --------------------------------- #
     seen_start = False
     nav_trivia = {
         "Inicio", "Mi red", "Empleos", "Mensajes", "Notificaciones",
@@ -259,20 +216,12 @@ def _extract_description(snapshot_text: str) -> str:
         "Cerrar", "Aceptar", "Saltar al contenido", "Pasar al contenido principal",
     }
     stop_phrases = (
-        "Ver empleos similares",
-        "Solicitar",
-        "Aplicar ahora",
-        "Aplicar con",
-        "See similar jobs",
-        "Apply",
-        "About us",
-        "Acerca de nosotros",
-        "Promocionado por",
-        "Promedio de antigüedad",
-        "Ha contratado a",
+        "Ver empleos similares", "Solicitar", "Aplicar ahora", "Aplicar con",
+        "See similar jobs", "Apply", "About us", "Acerca de nosotros",
+        "Promocionado por", "Promedio de antigüedad", "Ha contratado a",
         "Desactivado",
     )
-    description_lines: List[str] = []
+    description_lines: list[str] = []
     for line in snapshot_text.splitlines():
         t = line.strip()
         if not t:
@@ -314,15 +263,13 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
     if m:
         job_id = m.group(1) or m.group(2) or ""
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     if not title:
         warnings.append("title not found")
 
     # LinkedIn sometimes marks a job as "Respuestas gestionadas fuera de
     # LinkedIn" / "Apply on company website" — in those cases the description
-    # is hosted externally and LinkedIn itself doesn't show it. We save what
-    # we do have (title, company, location) plus the external URL if present,
-    # so the user can decide to skip it or visit the URL manually.
+    # is hosted externally and LinkedIn itself doesn't show it.
     is_external_apply = (
         "Respuestas gestionadas fuera de LinkedIn" in snapshot_text
         or "Apply on company website" in snapshot_text
@@ -334,7 +281,6 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
     )
     external_url = ""
     if external_url_match:
-        # The url parameter is URL-encoded
         from urllib.parse import unquote
         external_url = unquote(external_url_match.group(1))
 
@@ -346,7 +292,6 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
     elif len(description) < 100:
         warnings.append(f"short description ({len(description)} chars)")
 
-    # Compose a useful placeholder description when LinkedIn hosts none
     if not description and is_external_apply:
         description = (
             "[LinkedIn no aloja la descripción completa. "
@@ -364,27 +309,92 @@ def _parse_job_detail(snapshot_text: str, url: str) -> SavedJob:
         job_id=job_id,
         warnings=warnings,
     )
-    # Stash the external apply URL for downstream tools
     if external_url:
         job.warnings.append(f"external_url:{external_url}")
     return job
 
 
 # --------------------------------------------------------------------------- #
-# Orchestrator                                                                #
+# MCP config builders                                                         #
 # --------------------------------------------------------------------------- #
 
 
-def _build_mcp_config() -> StdioMcpConfig:
-    # BrowserMCP runs via `npx -y @browsermcp/mcp@latest`, which downloads
-    # the package to npm's cache. On this Mac the default cache (~/.npm)
-    # has permission issues; we always redirect to a user-owned cache so
-    # `npx` doesn't fail with EACCES/EEXIST mid-scrape.
+def _profile_has_cookies(profile_dir: Path) -> bool:
+    """Return True when the persisted Chromium user-data-dir already contains
+    a non-empty cookies store — i.e. a real logged-in session.
+
+    Used to decide between headed mode (first run — user has to log into
+    LinkedIn manually) and headless mode (subsequent runs — session is
+    persisted and we don't need a visible browser window).
+
+    Chromium creates `<profile>/Default/Cookies` (SQLite file) the moment a
+    context opens, even without any login — so its mere existence is NOT a
+    reliable signal. We require the file to be non-trivially sized (> 2 KB),
+    which means it actually contains at least one cookie (LinkedIn sets
+    several `li_*` cookies on the logged-in pages).
+    """
+    profile_dir = Path(profile_dir)
+    if not profile_dir.exists():
+        return False
+    cookies_file = profile_dir / "Default" / "Cookies"
+    if not cookies_file.exists():
+        return False
+    try:
+        return cookies_file.stat().st_size > 2048
+    except OSError:
+        return False
+
+
+def _build_playwright_mcp_config(force_headed: bool = False) -> StdioMcpConfig:
+    """Build the stdio config for @playwright/mcp with a persistent profile.
+
+    The `--user-data-dir` flag persists cookies so the LinkedIn login survives
+    across runs. On the FIRST run (when the profile directory has no cookies
+    yet) we launch the browser HEADED so you can log into LinkedIn manually;
+    once the profile has cookies, subsequent runs are HEADLESS automatically.
+
+    Pass `force_headed=True` to always run with a visible window (useful for
+    debugging, or when you suspect the session expired and want to re-login).
+    """
     import os
     env = dict(os.environ)
-    env.setdefault(
-        "npm_config_cache", str(Path.home() / ".npm-user-cache")
+    env.setdefault("npm_config_cache", str(Path.home() / ".npm-user-cache"))
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+
+    from src.config import PROJECT_ROOT
+    user_data_dir = settings.playwright_user_data_dir
+    if not Path(user_data_dir).is_absolute():
+        user_data_dir = str(PROJECT_ROOT / settings.playwright_user_data_dir)
+
+    profile_path = Path(user_data_dir)
+    has_cookies = _profile_has_cookies(profile_path)
+    headless = (not force_headed) and has_cookies
+    if not headless:
+        log.warning(
+            "Lanzando Chromium HEADED (visible) para que te loguees en LinkedIn. "
+            "Iniciá sesión en la ventana que se abre; cuando LinkedIn muestre "
+            "tu páginas de saved jobs (o cualquier página logueada), el scraper "
+            "continúa. La sesión se persiste en %s y próximas corridas ya "
+            "serán headless.",
+            user_data_dir,
+        )
+
+    extra_args = ["--user-data-dir", user_data_dir]
+    if headless:
+        extra_args.append("--headless")
+
+    return StdioMcpConfig(
+        command=settings.playwright_mcp_command,
+        args=list(settings.playwright_mcp_args) + extra_args,
+        env=env,
     )
+
+
+def _build_browser_mcp_config() -> StdioMcpConfig:
+    """Build the stdio config for the legacy Browser MCP server."""
+    import os
+    env = dict(os.environ)
+    env.setdefault("npm_config_cache", str(Path.home() / ".npm-user-cache"))
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     return StdioMcpConfig(
         command=settings.browser_mcp_command,
@@ -393,87 +403,417 @@ def _build_mcp_config() -> StdioMcpConfig:
     )
 
 
-async def extract_saved_jobs(
-    saved_jobs_url: str = "",
-    nav_delay_s: Optional[int] = None,
-    on_progress: Optional[Any] = None,
-) -> List[SavedJob]:
-    """Connect to Browser MCP and scrape every saved job posting.
+def _build_mcp_config(backend: str = "playwright") -> StdioMcpConfig:
+    backend = (backend or settings.scraper_backend).lower()
+    if backend == "browsermcp":
+        log.info("scraper backend: browsermcp (legacy)")
+        return _build_browser_mcp_config()
+    log.info("scraper backend: playwright (auto-wait via browser_wait_for)")
+    return _build_playwright_mcp_config()
 
-    Parameters
-    ----------
-    saved_jobs_url
-        Defaults to settings.linkedin_saved_jobs_url.
-    nav_delay_s
-        Override of the inter-page wait for slow networks.
-    on_progress
-        Optional callback `on_progress(done, total, job)` invoked after each job.
+
+def _is_headless(config: StdioMcpConfig) -> bool:
+    """Return True if the MCP process will be launched in headless mode."""
+    return "--headless" in config.args
+
+
+# --------------------------------------------------------------------------- #
+# Orchestrator                                                                #
+# --------------------------------------------------------------------------- #
+
+
+# Markers used by `browser_wait_for` to auto-wait for content on each LinkedIn
+# page. Playwright MCP resolves `browser_wait_for` natively (it polls until the
+# text appears in the DOM), eliminating the historical "page didn't finish
+# loading" silent failures.
+SAVED_JOBS_MARKER_TEXT = "Empleos guardados"
+JOB_DETAIL_MARKERS = ("Acerca del empleo", "About the job")
+
+
+def _strip_url_for_tool(url: str) -> str:
+    """Some MCP variants refuse trailing slashes — keep it simple."""
+    return url
+
+
+SEE_MORE_RE = re.compile(
+    r'(?:button|link|generic)\s+"(\.{0,3}\s*(?:más|see more|view more|ver más))"'
+    r'\s*\[ref=(e\d+)\]',
+    re.IGNORECASE,
+)
+
+
+async def _try_click_see_more(
+    client: StdioMcpClient,
+    snap: str,
+    tool_names: list[str],
+) -> bool:
+    """Try to click the '...más' / 'See more' button on a LinkedIn job page
+    to expand the truncated job description. Returns True if a click was made.
+
+    LinkedIn truncates long job descriptions and shows a '...más' button.
+    Without clicking it, the snapshot only contains the first ~400 chars of
+    the description. We search the snapshot for the button, extract its ref,
+    and call `browser_click` with it.
     """
-    saved_jobs_url = saved_jobs_url or settings.linkedin_saved_jobs_url
-    nav_delay = nav_delay_s if nav_delay_s is not None else settings.browser_nav_delay_s
+    if "browser_click" not in tool_names:
+        return False
+    m = SEE_MORE_RE.search(snap)
+    if not m:
+        return False
+    ref = m.group(2)
+    try:
+        await client.call_tool(
+            "browser_click",
+            {"element": m.group(1), "ref": ref},
+            timeout_s=15,
+        )
+        await asyncio.sleep(1.5)
+        return True
+    except McpError as e:
+        log.debug("click see-more returned: %s", str(e)[:120])
+        return False
+    except Exception:
+        return False
 
-    config = _build_mcp_config()
+
+async def _navigate_and_wait(
+    client: StdioMcpClient,
+    url: str,
+    wait_marker: str | None,
+    nav_delay_s: int,
+    tool_names: list[str],
+    timeout_wait: int = 30,
+    timeout_nav: int = 60,
+    try_see_more: bool = False,
+) -> str:
+    """Navigate, then wait for a DOM marker if the tool is available, otherwise
+    fall back to a fixed sleep. Returns the snapshot text.
+
+    If `try_see_more` is True, after the initial snapshot we look for a
+    '...más' / 'See more' button and click it to expand the full job
+    description, then re-snapshot.
+    """
+    try:
+        await client.call_tool(
+            "browser_navigate", {"url": _strip_url_for_tool(url)}, timeout_s=timeout_nav
+        )
+    except McpError as e:
+        msg = str(e)
+        if "No connection" in msg or "tab is not" in msg:
+            log.warning("browser_navigate failed (%s) — try direct snapshot", msg[:120])
+        else:
+            raise
+    # Auto-wait when possible.
+    waited = False
+    if wait_marker and "browser_wait_for" in tool_names:
+        try:
+            await client.call_tool(
+                "browser_wait_for",
+                {"text": wait_marker, "time": 1},
+                timeout_s=timeout_wait,
+            )
+            waited = True
+        except McpError as e:
+            log.warning("browser_wait_for('%s') returned: %s — proceeding", wait_marker, str(e)[:120])
+    if not waited:
+        await asyncio.sleep(max(nav_delay_s, 6))
+    snap = extract_text_content(await client.call_tool("browser_snapshot", {}, timeout_s=60))
+    if try_see_more:
+        clicked = await _try_click_see_more(client, snap, tool_names)
+        if clicked:
+            log.debug("expanded job description via 'see more' — re-snapshotting")
+            if wait_marker and "browser_wait_for" in tool_names:
+                try:
+                    await client.call_tool(
+                        "browser_wait_for",
+                        {"text": wait_marker, "time": 1},
+                        timeout_s=15,
+                    )
+                except McpError:
+                    pass
+            snap = extract_text_content(
+                await client.call_tool("browser_snapshot", {}, timeout_s=60)
+            )
+    return snap
+
+
+async def _scrape_single_job(
+    job_url: str,
+    backend: str = "playwright",
+    nav_delay_s: int | None = None,
+) -> list[SavedJob]:
+    """Scrape a single LinkedIn job posting directly (no saved-jobs listing).
+
+    Used when `--job <url>` points to a job posting. Navigates ONCE to the
+    job URL, clicks 'see more' to expand the description, retries on empty
+    snapshots, and returns a 1-element list. Works for any LinkedIn job URL
+    (saved or not) as long as the persistent session can view it.
+    """
+    nav_delay = nav_delay_s if nav_delay_s is not None else settings.browser_nav_delay_s
+    config = _build_mcp_config(backend)
+    headless_mode = _is_headless(config)
+    wait_timeout_sec = 30 if headless_mode else 300
     client = StdioMcpClient(config)
     await client.start()
     try:
         await client.initialize()
         tools = await client.list_tools()
         tool_names = [t.get("name", "") for t in tools]
-        log.info("BrowserMCP exposes %d tools", len(tools))
+        if "browser_navigate" not in tool_names or "browser_snapshot" not in tool_names:
+            raise RuntimeError(
+                f"MCP server didn't expose browser_navigate/browser_snapshot — "
+                f"available tools: {tool_names}."
+            )
+        log.info("navigating to job %s", job_url)
+        snap = await _navigate_and_wait(
+            client,
+            job_url,
+            wait_marker=JOB_DETAIL_MARKERS[0] if "browser_wait_for" in tool_names else None,
+            nav_delay_s=nav_delay,
+            tool_names=tool_names,
+            timeout_wait=wait_timeout_sec,
+            try_see_more=True,
+        )
+        # Login-wall detection (same logic as the listing flow).
+        snapshot_lower = snap.lower()
+        if ("sign in" in snapshot_lower or "iniciar sesión" in snapshot_lower
+                or "/login" in snap.lower() or "/checkpoint" in snap.lower()):
+            if headless_mode:
+                log.error(
+                    "LinkedIn shows the login page — no session in %s. Run "
+                    "`python run.py login` first.",
+                    settings.playwright_user_data_dir,
+                )
+                return []
+            log.warning("Login required — log in in the open window.")
+            for attempt in range(30):
+                await asyncio.sleep(20)
+                try:
+                    snap = extract_text_content(
+                        await client.call_tool("browser_snapshot", {}, timeout_s=60)
+                    )
+                except Exception:
+                    continue
+                low = snap.lower()
+                if ("sign in" not in low and "iniciar sesión" not in low
+                        and "/login" not in snap.lower()
+                        and "/checkpoint" not in snap.lower()):
+                    break
+            else:
+                log.error("No login detected after 10 min.")
+                return []
+
+        job = _parse_job_detail(snap, job_url)
+        # Retry up to 2 times if description is missing (same as the listing flow).
+        retries = 0
+        while ("description not found" in job.warnings
+               or ("short description" in " ".join(job.warnings) and not job.description)) \
+                and retries < 2:
+            retries += 1
+            alt_marker = JOB_DETAIL_MARKERS[retries % len(JOB_DETAIL_MARKERS)]
+            log.info("retry %d for %s (waiting for '%s')", retries, job_url, alt_marker)
+            if "browser_wait_for" in tool_names:
+                try:
+                    await client.call_tool(
+                        "browser_wait_for", {"text": alt_marker, "time": 2},
+                        timeout_s=30,
+                    )
+                except McpError as e:
+                    log.warning("wait returned: %s; falling back to sleep", str(e)[:120])
+                    await asyncio.sleep(6)
+            else:
+                await asyncio.sleep(6)
+            snap = extract_text_content(
+                await client.call_tool("browser_snapshot", {}, timeout_s=60)
+            )
+            await _try_click_see_more(client, snap, tool_names)
+            snap = extract_text_content(
+                await client.call_tool("browser_snapshot", {}, timeout_s=60)
+            )
+            job = _parse_job_detail(snap, job_url)
+        if job.warnings:
+            log.warning("parse warnings for %s: %s", job_url, job.warnings)
+        return [job]
+    finally:
+        try:
+            await client.call_tool("browser_close", {}, timeout_s=10)
+        except Exception:
+            pass
+        await client.close()
+
+
+async def extract_saved_jobs(
+    saved_jobs_url: str = "",
+    nav_delay_s: int | None = None,
+    on_progress: Any | None = None,
+    backend: str = "playwright",
+) -> list[SavedJob]:
+    """Connect to the configured MCP server and scrape every saved job posting.
+
+    Parameters
+    ----------
+    saved_jobs_url
+        Defaults to settings.linkedin_saved_jobs_url.
+    nav_delay_s
+        Override of the inter-page wait for slow networks. With Playwright
+        MCP the auto-wait (`browser_wait_for`) makes this largely redundant.
+    on_progress
+        Optional callback `on_progress(done, total, job)` invoked after each job.
+    backend
+        "playwright" (default; uses `@playwright/mcp` + user-data-dir) or
+        "browsermcp" (legacy; uses `@browsermcp/mcp` + Chrome extension).
+    """
+    saved_jobs_url = saved_jobs_url or settings.linkedin_saved_jobs_url
+    nav_delay = nav_delay_s if nav_delay_s is not None else settings.browser_nav_delay_s
+
+    # Single-job mode: when the target URL itself is a LinkedIn job posting
+    # (e.g. `--job https://www.linkedin.com/jobs/view/4431977634/`), skip the
+    # saved-jobs listing entirely and scrape just that one job. This works
+    # for ANY LinkedIn job URL (saved or not) as long as the logged-in
+    # session can view it.
+    if JOB_URL_RE.search(saved_jobs_url or ""):
+        log.info("single-job mode — scraping %s directly", saved_jobs_url)
+        return await _scrape_single_job(
+            saved_jobs_url, backend=backend, nav_delay_s=nav_delay,
+        )
+
+    config = _build_mcp_config(backend)
+    headless_mode = _is_headless(config)
+    # In headed mode (first run / no cookies yet), allow up to 5 minutes for the
+    # user to log into LinkedIn manually before the auto-wait times out.
+    wait_timeout_sec = 30 if headless_mode else 300
+    client = StdioMcpClient(config)
+    await client.start()
+    try:
+        await client.initialize()
+        tools = await client.list_tools()
+        tool_names = [t.get("name", "") for t in tools]
+        log.info("MCP exposes %d tools", len(tools))
         log.debug("tool names: %s", tool_names)
         if "browser_navigate" not in tool_names or "browser_snapshot" not in tool_names:
             raise RuntimeError(
-                "BrowserMCP didn't expose browser_navigate/browser_snapshot — "
-                f"available tools: {tool_names}. Make sure the Chrome extension "
-                "is installed and a tab is connected. See README.md."
+                f"MCP server didn't expose browser_navigate/browser_snapshot — "
+                f"available tools: {tool_names}. Make sure the right MCP server is "
+                f"running (backend={backend})."
             )
-        # 1. List saved jobs.
+        # 1. List saved jobs on the saved-jobs page.
         log.info("navigating to %s", saved_jobs_url)
-        try:
-            await client.call_tool("browser_navigate", {"url": saved_jobs_url}, timeout_s=60)
-            await asyncio.sleep(max(nav_delay, 5))
-        except McpError as e:
-            # Common case on the very first run: the BrowserMCP extension
-            # reports "No connection to browser extension" because Chrome
-            # hasn't fully connected yet. Fall back to a snapshot of the
-            # currently-focused tab, which is often already on the right
-            # page (because the user pinned and navigated there manually).
-            msg = str(e)
-            log.warning("browser_navigate failed: %s — attempting snapshot of current tab", msg[:120])
-        try:
-            list_snapshot = extract_text_content(
-                await client.call_tool("browser_snapshot", {}, timeout_s=60)
-            )
-        except McpError as e:
-            log.error("browser_snapshot also failed: %s", e)
-            return []
+        list_snapshot = await _navigate_and_wait(
+            client,
+            saved_jobs_url,
+            wait_marker=SAVED_JOBS_MARKER_TEXT if "browser_wait_for" in tool_names else None,
+            nav_delay_s=nav_delay,
+            tool_names=tool_names,
+            timeout_wait=wait_timeout_sec,
+        )
         if not list_snapshot.strip():
             log.error("empty snapshot — tab not on a valid page?")
             return []
+        # Detect login-wall: LinkedIn redirected us to /login or /checkpoint.
+        snapshot_lower = list_snapshot.lower()
+        is_login_wall = (
+            "sign in" in snapshot_lower or "iniciar sesión" in snapshot_lower
+            or "/login" in list_snapshot.lower() or "/checkpoint" in list_snapshot.lower()
+        )
+        if is_login_wall:
+            if headless_mode:
+                log.error(
+                    "LinkedIn está mostrando la página de login — no hay sesión "
+                    "iniciada en el perfil persistente (%s). Ejecutá primero "
+                    "`python run.py login` para abrir Chromium headed, iniciá "
+                    "sesión manualmente, cerrá el navegador, y volvé a correr "
+                    "`python run.py all` (las próximas corridas ya recordarán "
+                    "la sesión).",
+                    settings.playwright_user_data_dir,
+                )
+                return []
+            # Headed mode: keep the browser open and wait for the user to log
+            # in. Poll the page every ~20 s, up to 10 minutes total. Once the
+            # saved-jobs page comes up (no /login, no /checkpoint in URL, and
+            # "Empleos guardados" or "Saved jobs" visible), proceed.
+            log.warning(
+                "La página de saved jobs requiere login. Tenés hasta 10 min "
+                "para iniciar sesión en la ventana del navegador que abrió. "
+                "Una vez que LinkedIn muestre tu página de saved-jobs, el "
+                "scraper continúa solo."
+            )
+            logged_in = False
+            for attempt in range(30):  # ~30 * 20s = 10 min
+                await asyncio.sleep(20)
+                try:
+                    list_snapshot = extract_text_content(
+                        await client.call_tool("browser_snapshot", {}, timeout_s=60)
+                    )
+                except Exception:
+                    continue
+                snapshot_lower = list_snapshot.lower()
+                if ("sign in" not in snapshot_lower
+                    and "iniciar sesión" not in snapshot_lower
+                    and "/login" not in list_snapshot.lower()
+                    and "/checkpoint" not in list_snapshot.lower()
+                    and ("empleos guardados" in snapshot_lower
+                         or "saved jobs" in snapshot_lower
+                         or JOB_URL_RE.search(list_snapshot))):
+                    logged_in = True
+                    break
+                if attempt % 3 == 2:
+                    log.info("aguardando login... (%d s transcurridos)", (attempt + 1) * 20)
+            if not logged_in:
+                log.error(
+                    "No se detectó login después de 10 min. Cerrá el navegador "
+                    "vos también y volvé a ejecutar `python run.py login` para "
+                    "loguearte con calma."
+                )
+                return []
+            log.info("login detectado — continuando con el scraping...")
         job_urls = _extract_job_urls(list_snapshot)
         log.info("found %d saved-job URLs in snapshot", len(job_urls))
 
         # 2. Visit each job page and parse.
-        jobs: List[SavedJob] = []
+        jobs: list[SavedJob] = []
         for idx, url in enumerate(job_urls, start=1):
             log.info("[%d/%d] navigating to %s", idx, len(job_urls), url)
             try:
-                await client.call_tool("browser_navigate", {"url": url}, timeout_s=60)
-                # LinkedIn renders the description block lazily (~3-10s after
-                # the DOM is interactive). We wait nav_delay, snapshot, and if
-                # the description came up short we wait another beat and retry —
-                # up to two retries (so 3 snapshots max).
-                await asyncio.sleep(max(nav_delay, 6))
-                snap = extract_text_content(await client.call_tool("browser_snapshot", {}, timeout_s=60))
+                wait_marker = JOB_DETAIL_MARKERS[0] if "browser_wait_for" in tool_names else None
+                snap = await _navigate_and_wait(
+                    client,
+                    url,
+                    wait_marker=wait_marker,
+                    nav_delay_s=nav_delay,
+                    tool_names=tool_names,
+                    try_see_more=True,
+                )
                 job = _parse_job_detail(snap, url)
                 retries = 0
                 while ("description not found" in job.warnings
                        or ("short description" in " ".join(job.warnings) and not job.description)) \
-                       and retries < 2:
+                        and retries < 2:
                     retries += 1
-                    log.info("snapshot retry %d for %s (no description yet)", retries, url)
-                    await asyncio.sleep(6)
-                    snap = extract_text_content(await client.call_tool("browser_snapshot", {}, timeout_s=60))
+                    alt_marker = JOB_DETAIL_MARKERS[retries % len(JOB_DETAIL_MARKERS)]
+                    log.info(
+                        "snapshot retry %d for %s (waiting for '%s')",
+                        retries, url, alt_marker,
+                    )
+                    if "browser_wait_for" in tool_names:
+                        try:
+                            await client.call_tool(
+                                "browser_wait_for",
+                                {"text": alt_marker, "time": 2},
+                                timeout_s=30,
+                            )
+                        except McpError as e:
+                            log.warning("wait returned: %s; falling back to sleep", str(e)[:120])
+                            await asyncio.sleep(6)
+                    else:
+                        await asyncio.sleep(6)
+                    # Also try clicking 'see more' again on retry.
+                    snap = extract_text_content(
+                        await client.call_tool("browser_snapshot", {}, timeout_s=60)
+                    )
+                    await _try_click_see_more(client, snap, tool_names)
+                    snap = extract_text_content(
+                        await client.call_tool("browser_snapshot", {}, timeout_s=60)
+                    )
                     job = _parse_job_detail(snap, url)
                 if job.warnings:
                     log.warning("parse warnings for %s: %s", url, job.warnings)
@@ -488,15 +828,19 @@ async def extract_saved_jobs(
                 jobs.append(SavedJob(title="", url=url, warnings=[f"scrape_error: {e}"]))
         return jobs
     finally:
+        try:
+            await client.call_tool("browser_close", {}, timeout_s=10)
+        except Exception:
+            pass
         await client.close()
 
 
-def scrape_saved_jobs() -> List[SavedJob]:
-    """Sync wrapper. Returns all saved jobs from LinkedIn via BrowserMCP."""
+def scrape_saved_jobs() -> list[SavedJob]:
+    """Sync wrapper. Returns all saved jobs from LinkedIn via the configured MCP."""
     return asyncio.run(extract_saved_jobs())
 
 
-def save_jobs_json(jobs: List[SavedJob], path: Path) -> Path:
+def save_jobs_json(jobs: list[SavedJob], path: Path) -> Path:
     import json
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -513,4 +857,5 @@ __all__ = [
     "save_jobs_json",
     "_extract_job_urls",
     "_parse_job_detail",
+    "_scrape_single_job",
 ]

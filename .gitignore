@@ -7,6 +7,13 @@
 input/*.docx
 input/*.doc
 input/*.pdf
+input/*.html
+input/base_cv.*
+
+# --- Playwright persistent profile (contains LinkedIn session) ---
+.playwright-profile/
+.playwright-profile-*/
+.playwright-mcp/
 
 # --- Generated outputs (regenerated on each run) ---
 jobs/

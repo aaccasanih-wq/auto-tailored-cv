@@ -18,10 +18,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
 
 from src.config import settings
 from src.utils.logging import get_logger
@@ -38,13 +38,13 @@ MACOS_SOFFICE_PATHS = (
 
 @dataclass
 class ConversionResult:
-    pdf_path: Optional[Path]
+    pdf_path: Path | None
     success: bool
     elapsed_seconds: float
     error: str = ""
 
 
-def find_soffice(executable: Optional[str] = None) -> Optional[str]:
+def find_soffice(executable: str | None = None) -> str | None:
     """Return the path to the soffice binary, or None if not found."""
     if executable and executable != "soffice":
         return executable if Path(executable).exists() else None
@@ -83,8 +83,8 @@ def _profile_lock(profile_dir: Path, timeout_seconds: int = 30) -> Iterator[Path
 
 def convert_docx_to_pdf(
     docx_path: Path,
-    output_dir: Optional[Path] = None,
-    executable: Optional[str] = None,
+    output_dir: Path | None = None,
+    executable: str | None = None,
     timeout_seconds: int = 120,
 ) -> ConversionResult:
     """Convert a .docx file to a .pdf with the same stem in `output_dir`.

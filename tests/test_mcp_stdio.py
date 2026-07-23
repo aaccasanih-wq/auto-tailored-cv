@@ -6,7 +6,7 @@ pure helpers like `extract_text_content`.
 
 from __future__ import annotations
 
-from src.extract.mcp_stdio import extract_text_content, McpError
+from src.extract.mcp_stdio import McpError, extract_text_content
 
 
 class TestExtractTextContent:
