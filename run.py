@@ -27,6 +27,7 @@ from src.extract.linkedin_scraper import (
     SavedJob,
     extract_saved_jobs,
     save_jobs_json,
+    _normalize_job_url,
 )
 from src.profile.cv_reader import read_cv
 from src.render import html_renderer, pdf_renderer
@@ -338,7 +339,8 @@ def cmd_tailor(args: argparse.Namespace) -> int:
     ensure_dirs()
     jobs = _load_cached_jobs()
     if args.job:
-        jobs = [j for j in jobs if (args.job in j.url or j.url in args.job)]
+        norm_job = _normalize_job_url(args.job)
+        jobs = [j for j in jobs if (norm_job in j.url or j.url in norm_job)]
         if not jobs:
             log.error("no cached job matches --job %s", args.job)
             return 2

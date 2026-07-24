@@ -13,6 +13,7 @@ from src.extract.linkedin_scraper import (
     JOB_URL_RE,
     SavedJob,
     _extract_job_urls,
+    _normalize_job_url,
     _parse_job_detail,
 )
 
@@ -46,6 +47,38 @@ class TestJobUrlRegex:
 
     def test_empty_input(self):
         assert JOB_URL_RE.search("") is None
+
+
+class TestNormalizeJobUrl:
+    def test_canonical_path_unchanged(self):
+        url = "https://www.linkedin.com/jobs/view/1234567890/"
+        assert _normalize_job_url(url) == url
+
+    def test_view_with_current_job_id_unchanged(self):
+        url = "https://www.linkedin.com/jobs/view/?currentJobId=9876543210&refId=abc"
+        assert _normalize_job_url(url) == url
+
+    def test_search_results_url_normalized(self):
+        url = (
+            "https://www.linkedin.com/jobs/search-results/?currentJobId=4429119711"
+            "&eBP=CwEAAAA&refId=abc&trackingId=def"
+        )
+        assert _normalize_job_url(url) == "https://www.linkedin.com/jobs/view/4429119711/"
+
+    def test_rewards_url_normalized(self):
+        url = "https://www.linkedin.com/jobs/c/rewards/?currentJobId=555"
+        assert _normalize_job_url(url) == "https://www.linkedin.com/jobs/view/555/"
+
+    def test_no_current_job_id_unchanged(self):
+        url = "https://www.linkedin.com/jobs/search/?keywords=data"
+        assert _normalize_job_url(url) == url
+
+    def test_empty_string(self):
+        assert _normalize_job_url("") == ""
+
+    def test_non_linkedin_url_unchanged(self):
+        url = "https://example.com/some/page"
+        assert _normalize_job_url(url) == url
 
 
 class TestExtractJobUrls:

@@ -49,6 +49,45 @@ JOB_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches `currentJobId=NNNN` in ANY LinkedIn jobs URL, including
+# `/jobs/search-results/?currentJobId=...` and `/jobs/c/rewards/...?currentJobId=...`.
+# Used by `_normalize_job_url` to extract the job ID and produce a canonical
+# `/jobs/view/<id>/` URL for the scraper.
+_CURRENT_JOB_ID_RE = re.compile(
+    r"currentJobId=(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_job_url(url: str) -> str:
+    """Normalize any LinkedIn jobs URL containing ``currentJobId=NNNN`` into
+    the canonical ``https://www.linkedin.com/jobs/view/<id>/`` form.
+
+    LinkedIn emits several URL patterns that all point to the same job:
+      - ``/jobs/view/<title-slug>-<id>/``         (canonical, already OK)
+      - ``/jobs/view/?currentJobId=<id>&...``      (canonical, already OK)
+      - ``/jobs/search-results/?currentJobId=<id>&...``  (search page — NO)
+      - ``/jobs/c/rewards/?currentJobId=<id>&...``       (saved-jobs sidebar — NO)
+
+    The last two are NOT matched by ``JOB_URL_RE`` and would cause the scraper
+    to treat the URL as a saved-jobs *listing* (taking a giant snapshot of the
+    search results page, which crashes Playwright MCP with a "chunk too long"
+    error). This function extracts the job ID from any of them and returns the
+    canonical single-job URL so the scraper enters single-job mode.
+
+    If the URL already matches the canonical form or does not contain a
+    ``currentJobId`` parameter, it is returned unchanged.
+    """
+    if not url:
+        return url
+    if JOB_URL_RE.search(url):
+        return url  # Already canonical — /view/<id>/ or /view/?currentJobId=<id>
+    m = _CURRENT_JOB_ID_RE.search(url)
+    if m:
+        job_id = m.group(1)
+        return f"https://www.linkedin.com/jobs/view/{job_id}/"
+    return url
+
 
 @dataclass
 class SavedJob:
@@ -665,6 +704,14 @@ async def extract_saved_jobs(
     """
     saved_jobs_url = saved_jobs_url or settings.linkedin_saved_jobs_url
     nav_delay = nav_delay_s if nav_delay_s is not None else settings.browser_nav_delay_s
+
+    # Normalize search-results / rewards URLs that carry a currentJobId param
+    # into the canonical /jobs/view/<id>/ form so the scraper enters
+    # single-job mode instead of trying to snapshot a giant search page.
+    original_url = saved_jobs_url
+    saved_jobs_url = _normalize_job_url(saved_jobs_url)
+    if saved_jobs_url != original_url:
+        log.info("normalized job URL: %s → %s", original_url, saved_jobs_url)
 
     # Single-job mode: when the target URL itself is a LinkedIn job posting
     # (e.g. `--job https://www.linkedin.com/jobs/view/4431977634/`), skip the
