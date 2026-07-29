@@ -17,6 +17,24 @@ extract  →  profile  →  tailor  →  evaluate  →  repair  →  render_html
 - `python3 run.py --help` — smoke check the CLI doesn't crash.
 - `python3 run.py tailor --dry-run` — runs the cache logic without LLM calls
   (will report "no saved jobs" if Playwright MCP isn't connected, which is fine).
+- `python3 run.py tailor <url> --dry-run` — confirms the positional URL alias
+  resolves to exactly ONE job from `jobs/` (count the dry-run rows!).
+
+## Hard rules — CLI scope (avoids accidental bulk re-tailorization)
+
+- `tailor` and `all` accept a **positional URL** as alias for `--job`:
+  `python run.py tailor https://www.linkedin.com/jobs/view/123/ --force` —
+  This targets exactly ONE cached job and NEVER triggers the bulk-confirm
+  prompt. This is the **safest form to use from an LLM agent**: always include
+  the URL (positional or via `--job`) when the user asked for a single offer.
+- `tailor --force` **without** `--job`/positional re-tailorizes EVERY job in
+  `jobs/*.json`. Since v0.2 this triggers an interactive `[y/N]` prompt on
+  stdin before any LLM call — non-interactive runs (no TTY / EOF on stdin)
+  abort with rc=1. Pass `--yes` to skip the prompt when you genuinely mean
+  "re-tailorize all N jobs".
+- Before any `--force` run, ALWAYS test scope with `--dry-run` first and count
+  the `[N/M]` rows. M must equal the number the user asked for. If M>1 and the
+  user asked for one offer, STOP and add `--job <url>` or the positional URL.
 
 ## Hard rules
 
@@ -96,7 +114,11 @@ extract  →  profile  →  tailor  →  evaluate  →  repair  →  render_html
   rules: flexible entry list + editable descriptor for `proyectos`, strict
   1:1 for `experiencia` / `educacion`. Flags invented projects, empty
   parentheses "()" in descriptor, and stray `enlaces` emitted by the LLM.
-- `src/extract/mcp_stdio.py` — minimal JSON-RPC 2.0 over stdio (unchanged).
+- `src/extract/mcp_stdio.py` — minimal JSON-RPC 2.0 over stdio. Raises the
+  asyncio StreamReader buffer limit to 64 MiB (default 64 KiB) so that
+  Playwright MCP `browser_snapshot` responses describing large LinkedIn
+  pages don't crash with `Separator is found, but chunk is longer than
+  limit`. Set via `limit=` on `asyncio.create_subprocess_exec`.
 - `src/extract/linkedin_scraper.py` — uses Playwright MCP (default) or
   Browser MCP (`--scraper browsermcp`). Uses `browser_wait_for` with
   Spanish/English job-description markers to auto-wait for content.
@@ -120,11 +142,15 @@ extract  →  profile  →  tailor  →  evaluate  →  repair  →  render_html
   `GET /` serves `cv.html`, `POST /save` overwrites it + kicks off PDF
   regen in a background thread. The save button in `cv_template.html` is
   hidden in `@media print`.
-- `run.py` — CLI. Subcommands: `all`, `extract`, `tailor`, `review`.
-  Flags: `--new`, `--force`, `--job <url>`, `--dry-run`, `--limit N`,
-  `--scraper playwright|browsermcp`, `--legacy-docx`. The `all` / `tailor`
-  commands do NOT pause for approval — they print each generated `cv.pdf`
-  path + a reminder that `review <slug>` is available.
+- `run.py` — CLI. Subcommands: `all`, `extract`, `tailor`, `review`,
+  `login`, `list`. Flags: `--new`, `--force`, `--job <url>`, **positional
+  `<url>`** (alias for `--job`), `--dry-run`, `--limit N`, `--yes` (skip the
+  bulk-confirm prompt), `--scraper playwright|browsermcp`, `--legacy-docx`.
+  Since v0.2, `all --force` / `tailor --force` **without** `--job`/positional
+  trigger an interactive `[y/N]` bulk-confirm prompt when they would touch >1
+  job; non-interactive runs (no TTY / EOF on stdin) abort with rc=1. Pass
+  `--yes` to skip the prompt. The `all` / `tailor` commands print each
+  generated `cv.pdf` path + a reminder that `review <slug>` is available.
 
 ## analysis.json schema (the contract)
 

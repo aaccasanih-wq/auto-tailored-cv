@@ -9,31 +9,60 @@ Cuando el usuario pida generar, tailorizar, actualizar o revisar sus CVs para
 ofertas laborales de LinkedIn, ejecutá en bash desde la raíz del proyecto
 `auto-tailored-cv` (si no estás en ese directorio, hacé `cd` ahí primero):
 
-    python run.py all [--new] [--job <url>] [--force] [--limit N] [--dry-run] [--legacy-docx]
+    python run.py all [URL] [--new] [--job <url>] [--force] [--limit N] [--dry-run] [--legacy-docx]
+
+`URL` es un **argumento posicional opcional** y alias de `--job <url>`. Los
+dos comandos siguientes son equivalentes:
+
+    python run.py all https://www.linkedin.com/jobs/view/123/ --force
+    python run.py all --job https://www.linkedin.com/jobs/view/123/ --force
 
 Interpretá el pedido del usuario para armar los flags:
 
 - "solo las nuevas" / "las que faltan" / "no repitas las que ya hice" → `--new`
-- "esta oferta en particular: <url>" → `--job <url>` (y agregá `--force` para
-  regenerar aunque ya exista). El `<url>` puede ser **cualquier** URL de
-  LinkedIn jobs (guardada o no, de búsqueda o de saved-jobs). No requiere
-  que la oferta esté "guardada" en la cuenta del usuario.
+- "esta oferta en particular: <url>" → pasá el `<url>` como **posicional** o
+  vía `--job <url>`, y agregá `--force` para regenerar aunque ya exista. El
+  `<url>` puede ser **cualquier** URL de LinkedIn jobs (guardada o no, de
+  búsqueda o de saved-jobs). No requiere que la oferta esté "guardada" en la
+  cuenta del usuario.
 - "vuelve a generar aunque ya exista" / "regenerar todos" / "no saltees
   ninguno" → `--force`
 - "no llames al LLM, solo revisa qué haría" / "dry run" / "simulacro" →
   `--dry-run`
 - "solo N ofertas" / "los primeros N" → `--limit N`
 
+## ⚠️ Invariante crítico — scope del `--force`
+
+- `tailor --force` o `all --force` **SIN** el URL posicional / `--job` re-tailoriza
+  TODOS los jobs cacheados en `jobs/*.json`. Antes de disparar el LLM, el CLI
+  imprime `About to (re)tailor N jobs ... Proceed? [y/N]`. En runs no
+  interactivos (stdin cerrado / EOF) aborta con rc=1.
+- **Cuando el usuario pidió UNA sola oferta, SIEMPRE pasá el URL** (posicional
+  o `--job`). Nunca omitas el URL aunque la extracción ya haya corrido
+  (extraer de nuevo 1 sola oferta cuesta ~15s; no es motivo para saltear).
+- **Tras un timeout del shell**: re-ejecutá EL MISMO comando con timeout mayor.
+  NO "optimices" cambiando a `tailor --force` sin URL — eso re-tailorizaría
+  todas las ofertas cacheadas.
+- Si el usuario confirma explícitamente "regenerá TODAS" / "todas las ofertas":
+  podés correr `tailor --force --yes` (el `--yes` saltea el prompt `[y/N]`).
+- **Antes de cualquier `--force` real**, corré primero `--dry-run` y contá
+  las filas `[N/M]`. `M` debe igualar la cantidad que el usuario pidió. Si
+  `M>1` y el usuario pidió una sola oferta, STOP: agregá el URL.
+
 ## Comandos disponibles
 
 | Comando | Para qué sirve |
 |---|---|
-| `python run.py all [flags]` | Pipeline completo: extrae + tailoriza + renderiza PDF |
-| `python run.py extract [--job <url>]` | Solo scrapea LinkedIn → `jobs/*.json` |
-| `python run.py tailor [flags]` | Solo tailoriza jobs ya extraídos (sin scrape) |
+| `python run.py all [url] [flags]` | Pipeline completo: extrae + tailoriza + renderiza PDF |
+| `python run.py extract [url] [--job <url>]` | Solo scrapea LinkedIn → `jobs/*.json` |
+| `python run.py tailor [url] [flags]` | Solo tailoriza jobs ya extraídos (sin scrape) |
 | `python run.py list` | Lista los `job_slug` disponibles para `review` |
 | `python run.py review <job_slug>` | Servidor local para editar el CV en el navegador |
 | `python run.py login` | Abre Chromium headed para loguearse en LinkedIn una vez |
+
+`url` es un argumento posicional opcional, alias de `--job <url>` (presente
+en `all`, `tailor` y `extract`). `--yes` saltea el prompt `[y/N]` que aparece
+cuando `--force` sin URL tocaría >1 job.
 
 ## Pipeline (3 etapas)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import argparse
 import pytest
 
 import run as run_module
@@ -288,6 +289,25 @@ class TestArgparseAndCommands:
         assert args.scraper == "browsermcp"
         assert args.legacy_docx is True
 
+    def test_all_positional_job_url(self):
+        p = run_module.build_parser()
+        args = p.parse_args(["all", "https://linkedin.com/jobs/view/123/"])
+        assert args.cmd == "all"
+        assert args.job_url == "https://linkedin.com/jobs/view/123/"
+        assert args.job is None
+
+    def test_tailor_positional_job_url(self):
+        p = run_module.build_parser()
+        args = p.parse_args(["tailor", "https://linkedin.com/jobs/view/456/"])
+        assert args.cmd == "tailor"
+        assert args.job_url == "https://linkedin.com/jobs/view/456/"
+
+    def test_tailor_yes_flag(self):
+        p = run_module.build_parser()
+        args = p.parse_args(["tailor", "--force", "--yes"])
+        assert args.yes is True
+        assert args.force is True
+
     def test_tailor_only_command(self):
         p = run_module.build_parser()
         args = p.parse_args(["tailor"])
@@ -403,3 +423,69 @@ class TestRepairFiltering:
         assert not (out / "analysis_repaired.json").exists()
         # Only 2 LLM calls: tailor + evaluate (no repair).
         assert len(stub.calls) == 2
+
+
+class TestBulkConfirmGuard:
+    """The `_needs_bulk_confirm` helper decides whether the CLI blocks on a
+    y/N prompt before letting `tailor`/`all` re-process more than one job."""
+
+    def _ns(self, **kw):
+        ns = argparse.Namespace(
+            dry_run=False, force=False, yes=False, job=None, new=False,
+            limit=0,
+        )
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_single_job_no_prompt(self):
+        assert run_module._needs_bulk_confirm(self._ns(force=True), 1) is False
+
+    def test_dry_run_no_prompt_even_if_force(self):
+        assert run_module._needs_bulk_confirm(
+            self._ns(force=True, dry_run=True), 10) is False
+
+    def test_no_force_no_prompt(self):
+        assert run_module._needs_bulk_confirm(self._ns(force=False), 10) is False
+
+    def test_bulk_force_triggers_prompt(self):
+        assert run_module._needs_bulk_confirm(self._ns(force=True), 5) is True
+
+    def test_yes_flag_skips_prompt(self):
+        assert run_module._needs_bulk_confirm(self._ns(force=True, yes=True), 5) is False
+
+    def test_zero_jobs_no_prompt(self):
+        assert run_module._needs_bulk_confirm(self._ns(force=True), 0) is False
+
+    def test_confirm_bulk_yes(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _p: "y")
+        assert run_module._confirm_bulk(3) is True
+
+    def test_confirm_bulk_no(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _p: "n")
+        assert run_module._confirm_bulk(3) is False
+
+    def test_confirm_bulk_eof_aborts(self, monkeypatch):
+        def _raise(_p):
+            raise EOFError
+        monkeypatch.setattr("builtins.input", _raise)
+        assert run_module._confirm_bulk(3) is False
+
+    def test_tailor_bulk_force_aborts_on_no(self, jobs_dir, output_dir, monkeypatch):
+        """End-to-end: 3 jobs cached, `tailor --force` (no --job), stdin
+        answers 'n' → rc=1, no LLM call made."""
+        for i in range(3):
+            _save_job_cache(_make_job(
+                title=f"Job {i}", url=f"https://linkedin.com/jobs/view/100{i}/",
+                job_id=str(100 + i),
+            ), tailored=True)
+        monkeypatch.setattr("builtins.input", lambda _p: "n")
+        # Make sure no real LLM is touched even if the guard fails.
+        called = {"v": 0}
+        def _fake_make():
+            called["v"] += 1
+            return None
+        monkeypatch.setattr(run_module, "make_client", _fake_make)
+        rc = run_module.main(["tailor", "--force"])
+        assert rc == 1
+        assert called["v"] == 0

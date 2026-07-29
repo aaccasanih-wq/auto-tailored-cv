@@ -6,12 +6,18 @@ Usage:
     python run.py tailor             # only tailor already-extracted jobs
     python run.py review <job_slug>  # editable review of a job's cv.html
     python run.py all --new          # only process jobs saved since last run
-    python run.py all --job <url>    # process one specific job URL
+    python run.py all <url>          # process one specific job URL (positional)
+    python run.py all --job <url>    # same, explicit flag form
     python run.py all --dry-run      # show what would be processed, no LLM calls
     python run.py all --force        # re-process already-processed jobs
     python run.py all --scraper playwright    # default; Playwright MCP
     python run.py all --scraper browsermcp     # legacy fallback; Browser MCP
     python run.py all --legacy-docx   # render via docx_writer + LibreOffice
+
+Safety: when `all` or `tailor` (without --dry-run) would target MORE THAN ONE
+job and `--force` is set, the CLI prompts `Apply to N jobs? [y/N]` on stdin.
+Decline (the default) aborts with rc=1. This prevents accidental bulk
+re-tailorization when an agent or user omits `--job`.
 """
 
 from __future__ import annotations
@@ -322,13 +328,56 @@ def do_tailor(
 
 
 # --------------------------------------------------------------------------- #
+# Bulk-confirmation guard                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _confirm_bulk(job_count: int) -> bool:
+    """Prompt the user (or driving agent) for y/N when about to process >1
+    job under --force without --dry-run. Returns True to proceed, False to
+    abort. Non-interactive streams (no TTY) abort unless `--yes` was passed
+    (the caller handles that flag before calling here, so by the time we're
+    invoked, --yes has already short-circuited us).
+    """
+    prompt = (
+        f"About to (re)tailor {job_count} jobs in one go. "
+        "This will make ~{n} LLM calls and can take several minutes.\n"
+        "Proceed? [y/N] ".format(n=job_count * 3)
+    )
+    try:
+        answer = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def _needs_bulk_confirm(args: argparse.Namespace, job_count: int) -> bool:
+    """Decide if we should block on the bulk confirm prompt. The guard fires
+    only when ALL of these are true:
+      - the command would touch >1 job (job_count > 1),
+      - --force is set (otherwise --new/skip handles incremental guard),
+      - --dry-run is NOT set (dry runs never call the LLM),
+      - --yes was NOT explicitly passed.
+    """
+    if getattr(args, "dry_run", False):
+        return False
+    if not getattr(args, "force", False):
+        return False
+    if job_count <= 1:
+        return False
+    if getattr(args, "yes", False):
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Commands                                                                    #
 # --------------------------------------------------------------------------- #
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
     ensure_dirs()
-    target = args.job
+    target = args.job or getattr(args, "job_url", None)
     jobs = do_extract(target_url=target, scraper_backend=args.scraper)
     if not jobs:
         return 1
@@ -337,17 +386,29 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
 def cmd_tailor(args: argparse.Namespace) -> int:
     ensure_dirs()
+    job_url = args.job or getattr(args, "job_url", None)
     jobs = _load_cached_jobs()
-    if args.job:
-        norm_job = _normalize_job_url(args.job)
+    if job_url:
+        norm_job = _normalize_job_url(job_url)
         jobs = [j for j in jobs if (norm_job in j.url or j.url in norm_job)]
         if not jobs:
-            log.error("no cached job matches --job %s", args.job)
+            log.error("no cached job matches --job %s", job_url)
             return 2
     if args.new:
         jobs = [j for j in jobs if not _is_processed(j)]
     if args.limit and args.limit > 0:
         jobs = jobs[: args.limit]
+    if _needs_bulk_confirm(args, len(jobs)):
+        log.warning(
+            "tailor --force would re-process %d cached job(s) at once.", len(jobs),
+        )
+        log.warning(
+            "If you meant a SINGLE job, re-run with `tailor --job <url> --force` "
+            "or add `--yes` to this command to skip this prompt."
+        )
+        if not _confirm_bulk(len(jobs)):
+            log.error("aborted by user; no jobs were processed.")
+            return 1
     outputs = do_tailor(
         jobs, dry_run=args.dry_run, force=args.force, legacy_docx=args.legacy_docx,
     )
@@ -357,11 +418,23 @@ def cmd_tailor(args: argparse.Namespace) -> int:
 
 def cmd_all(args: argparse.Namespace) -> int:
     ensure_dirs()
-    jobs = do_extract(target_url=args.job, scraper_backend=args.scraper)
+    job_url = args.job or getattr(args, "job_url", None)
+    jobs = do_extract(target_url=job_url, scraper_backend=args.scraper)
     if args.new:
         jobs = [j for j in jobs if not _is_processed(j)]
     if args.limit and args.limit > 0:
         jobs = jobs[: args.limit]
+    if _needs_bulk_confirm(args, len(jobs)):
+        log.warning(
+            "all --force would re-process %d job(s) at once.", len(jobs),
+        )
+        log.warning(
+            "If you meant a SINGLE job, re-run with `all --job <url> --force` "
+            "or add `--yes` to skip this prompt."
+        )
+        if not _confirm_bulk(len(jobs)):
+            log.error("aborted by user; no jobs were processed.")
+            return 1
     outputs = do_tailor(
         jobs, dry_run=args.dry_run, force=args.force, legacy_docx=args.legacy_docx,
     )
@@ -561,12 +634,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     def add_common(p: argparse.ArgumentParser) -> None:
+        # Positional URL (alias for --job). nargs='?' so it's optional: the
+        # command works just as well with `--job <url>` only.
+        p.add_argument("job_url", nargs="?", default=None,
+                       help="optional job URL (alias for --job; mutually handled)")
         p.add_argument("--dry-run", action="store_true",
                        help="show what would be processed without calling the LLM")
         p.add_argument("--new", action="store_true",
                        help="only process jobs not yet processed")
         p.add_argument("--force", action="store_true",
                        help="re-process even if already processed")
+        p.add_argument("--yes", action="store_true",
+                       help="skip the bulk-confirm prompt when >1 job targeted")
         p.add_argument("--job", metavar="URL", help="process only this specific job URL")
         p.add_argument("--limit", type=int, default=0, help="process at most N jobs (0=all)")
         p.add_argument("--scraper", default=settings.scraper_backend,
@@ -580,6 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_all.set_defaults(func=cmd_all)
 
     p_extract = sub.add_parser("extract", help="scrape LinkedIn saved jobs only")
+    p_extract.add_argument("job_url", nargs="?", default=None,
+                           help="optional job URL (alias for --job)")
     p_extract.add_argument("--job", metavar="URL", help="scrape only this job URL (for testing)")
     p_extract.add_argument("--scraper", default=settings.scraper_backend,
                           choices=("playwright", "browsermcp"),

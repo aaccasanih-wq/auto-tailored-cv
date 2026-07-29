@@ -37,6 +37,12 @@ log = get_logger(__name__)
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_TIMEOUT_S = 30
+# asyncio StreamReader buffer limit (bytes). The default (64 KiB) is too small
+# for Playwright MCP `browser_snapshot` responses: a single JSON-RPC message
+# describing a LinkedIn accessibility tree routinely exceeds 1 MiB and can
+# reach several MiB. Bumping this avoids
+# `ValueError: Separator is found, but chunk is longer than limit`.
+DEFAULT_STREAM_LIMIT = 64 * 1024 * 1024  # 64 MiB
 
 
 @dataclass
@@ -63,9 +69,11 @@ class McpError(Exception):
 class StdioMcpClient:
     """Async MCP stdio client. Single in-flight request at a time."""
 
-    def __init__(self, config: StdioMcpConfig, default_timeout_s: int = DEFAULT_TIMEOUT_S):
+    def __init__(self, config: StdioMcpConfig, default_timeout_s: int = DEFAULT_TIMEOUT_S,
+                 stream_limit: int = DEFAULT_STREAM_LIMIT):
         self.config = config
         self.default_timeout_s = default_timeout_s
+        self.stream_limit = stream_limit
         self.proc: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future] = {}
@@ -92,6 +100,7 @@ class StdioMcpClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=self.stream_limit,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
