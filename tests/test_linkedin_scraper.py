@@ -7,16 +7,26 @@ real Chrome session, so we test only the pure-Python parsing functions here
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from src.extract.linkedin_scraper import (
     JOB_URL_RE,
     SavedJob,
     _extract_job_urls,
+    _extract_saved_times,
     _job_id_from_url,
     _normalize_job_url,
     _parse_job_detail,
+    _parse_relative_saved_to_iso,
 )
+
+FIXED_NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _iso(label: str) -> str:
+    return _parse_relative_saved_to_iso(label, now=FIXED_NOW)
 
 
 class TestJobUrlRegex:
@@ -116,6 +126,74 @@ class TestJobIdFromUrl:
 
     def test_non_linkedin_returns_empty(self):
         assert _job_id_from_url("https://example.com/x") == ""
+
+
+class TestParseRelativeSavedToIso:
+    def test_saved_today_es(self):
+        assert _iso("Guardado hoy") == FIXED_NOW.isoformat(timespec="seconds")
+
+    def test_saved_today_en(self):
+        assert _iso("Saved today") == _iso("Guardado hoy")
+
+    def test_saved_yesterday(self):
+        assert _iso("Guardado ayer") == _iso("Saved yesterday")
+        assert _iso("Guardado ayer") == "2026-07-31T12:00:00+00:00"
+
+    def test_saved_days_ago_es(self):
+        assert _iso("Guardado hace 3 días") == _iso("Saved 3 days ago")
+        assert _iso("Guardado hace 3 días") == "2026-07-29T12:00:00+00:00"
+
+    def test_saved_hours_ago_en(self):
+        assert _iso("Saved 5 hours ago") == _iso("Guardado hace 5 horas")
+
+    def test_saved_weeks_and_months(self):
+        assert _iso("Guardado hace 2 semanas") == _iso("Saved 2 weeks ago")
+        assert _iso("Guardado hace 1 mes") == _iso("Saved 1 month ago")
+
+    def test_garbage_returns_empty(self):
+        assert _iso("") == ""
+        assert _iso("cualquier cosa") == ""
+
+    def test_posting_date_not_confused_with_save_date(self):
+        """'hace 1 día' alone is NOT a save label — it must start with
+        'Guardado'/'Saved' to be treated as a save timestamp."""
+        assert _iso("Lima, Perú · hace 1 día") == ""
+
+
+class TestExtractSavedTimes:
+    SNAPSHOT = """\
+- link "Practicante Profesional de Planeamiento Comercial" [ref=a1]: https://www.linkedin.com/jobs/view/4447532297/
+- paragraph [ref=a2]: Guardado hace 2 días
+- link "Practicante Profesional de Mejora Continua" [ref=b1]: https://www.linkedin.com/jobs/view/4431977634/
+- paragraph [ref=b2]: Guardado ayer
+"""
+
+    def test_pairs_labels_to_nearest_url(self):
+        times = _extract_saved_times(self.SNAPSHOT, now=FIXED_NOW)
+        assert times["https://www.linkedin.com/jobs/view/4447532297/"] == _iso("Guardado hace 2 días")
+        assert times["https://www.linkedin.com/jobs/view/4431977634/"] == _iso("Guardado ayer")
+
+    def test_label_before_url_is_paired(self):
+        snap = """\
+- paragraph: Guardado hace 1 semana
+- link "X" [ref=a]: https://www.linkedin.com/jobs/view/111/
+"""
+        times = _extract_saved_times(snap, now=FIXED_NOW)
+        assert times["https://www.linkedin.com/jobs/view/111/"] == _iso("Guardado hace 1 semana")
+
+    def test_no_labels_returns_empty(self):
+        snap = """\
+- link "X" [ref=a]: https://www.linkedin.com/jobs/view/111/
+"""
+        assert _extract_saved_times(snap) == {}
+
+    def test_canonicalizes_url_variants(self):
+        snap = """\
+- link "X" [ref=a]: https://www.linkedin.com/jobs/view/data-eng-555/
+- paragraph: Saved 1 day ago
+"""
+        times = _extract_saved_times(snap, now=FIXED_NOW)
+        assert times == {"https://www.linkedin.com/jobs/view/555/": _iso("Saved 1 day ago")}
 
 
 class TestExtractJobUrls:

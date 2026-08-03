@@ -58,6 +58,29 @@ Interpretá el pedido del usuario para armar los flags:
 - "no llames al LLM, solo revisa qué haría" / "dry run" / "simulacro" →
   `--dry-run`
 - "solo N ofertas" / "los primeros N" → `--limit N`
+- "la última oferta (guardada)" / "la que guardé más recientemente" →
+  `python run.py extract` (fresco) y después `python run.py tailor --last 1`
+- "las N últimas ofertas guardadas" / "las 6 que guardé hoy" →
+  `python run.py extract` y después `python run.py tailor --last N`
+- "solo las pendientes de generar CV" → `--new`
+
+### IMPORTANTE — "última oferta guardada" (regla anti-arbitrariedad)
+
+El pipeline **no puede saber** cuál es la última oferta guardada leyendo el
+cache viejo: `saved_at_iso` solo se llena en extracciones nuevas (parsea el
+"Guardado hace X días" / "Saved N days ago" de la página de saved-jobs, y como
+fallback guarda el orden de listado `saved_order`, porque LinkedIn ordena la
+lista por más reciente primero). Por lo tanto:
+
+1. **SIEMPRE corré primero `python run.py extract`** para refrescar el cache
+   con `saved_at_iso`/`saved_order` (sin esto, `--last N` elige en orden de
+   archivo = arbitrario).
+2. Después usá `python run.py tailor --last N`.
+3. **Verificá con `--dry-run` primero** (`python run.py tailor --last N --dry-run`)
+   y confirmá que el `[1/N]` que imprime es la oferta que el usuario quiere.
+   No asumas ni adivines: la fecha/orden sale de los datos.
+4. Si `--last N` no te da la oferta esperada, el cache está desactualizado:
+   volvé a `extract` o preguntale al usuario por el link exacto.
 
 > **Dedup automático**: el pipeline mantiene un registro por `job_id`
 > (`jobs/_index.json`). Si el usuario pega un link de una oferta que ya tiene

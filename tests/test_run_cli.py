@@ -139,6 +139,46 @@ class TestRegistry:
         assert _already_generated("https://www.linkedin.com/jobs/view/999999/") is None
 
 
+class TestSortByRecency:
+    def _job(self, job_id, saved_at_iso="", saved_order=-1, title="J"):
+        return SavedJob(
+            title=title, url=f"https://www.linkedin.com/jobs/view/{job_id}/",
+            company="Acme", job_id=job_id, saved_at_iso=saved_at_iso, saved_order=saved_order,
+        )
+
+    def test_dated_jobs_first_most_recent(self):
+        jobs = [
+            self._job("1", saved_at_iso="2026-07-01T10:00:00+00:00"),
+            self._job("2", saved_at_iso="2026-08-01T10:00:00+00:00"),
+            self._job("3", saved_at_iso="2026-06-01T10:00:00+00:00"),
+        ]
+        result = run_module._sort_by_recency(jobs)
+        assert [j.job_id for j in result] == ["2", "1", "3"]
+
+    def test_undated_fall_back_to_saved_order(self):
+        """Old caches without a date use the listing order (1 = most recent)."""
+        jobs = [
+            self._job("a", saved_order=5),
+            self._job("b", saved_order=1),
+            self._job("c", saved_order=2),
+        ]
+        result = run_module._sort_by_recency(jobs)
+        assert [j.job_id for j in result] == ["b", "c", "a"]
+
+    def test_dated_beat_undated(self):
+        jobs = [
+            self._job("old_dated", saved_at_iso="2026-01-01T10:00:00+00:00"),
+            self._job("undated_first", saved_order=1),
+        ]
+        result = run_module._sort_by_recency(jobs)
+        assert [j.job_id for j in result] == ["old_dated", "undated_first"]
+
+    def test_last_flag_parser(self):
+        p = run_module.build_parser()
+        args = p.parse_args(["tailor", "--last", "1"])
+        assert args.last == 1
+
+
 def _base_profile() -> CVProfile:
     """Base profile mirroring the new generic schema."""
     return CVProfile(

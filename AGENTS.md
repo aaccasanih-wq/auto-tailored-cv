@@ -58,6 +58,20 @@ extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  rende
   files (idempotent), so pre-existing jobs are covered even before their next
   extraction. It runs at the start of `all` and `tailor`.
 
+## "Última oferta guardada" (recency)
+
+- The scraper captures when each job was saved: it parses the `Guardado hace X
+  días` / `Saved N days ago` labels of the saved-jobs listing into
+  `SavedJob.saved_at_iso`, and always records `saved_order` (1 = most recently
+  saved, because LinkedIn orders the listing by recency).
+- `--last N` processes the N most recently saved jobs: it sorts by
+  `saved_at_iso` desc (falling back to `saved_order` for old caches).
+- The user's cache only gets `saved_at_iso`/`saved_order` on a FRESH
+  `extract`. So a query like "generá el CV para la última oferta guardada"
+  MUST be answered by running `extract` first, then `tailor --last 1`, and
+  verifying with `--dry-run` before spending LLM calls. Never guess "last"
+  from file/job-id ordering — it is arbitrary.
+
 ## Hard rules
 
 - **Never commit `.env`, `input/base_cv.yaml`, `input/preferences.txt`,

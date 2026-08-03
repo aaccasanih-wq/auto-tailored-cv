@@ -10,6 +10,7 @@ Usage:
     python run.py all --job <url>    # same, explicit flag form
     python run.py all --dry-run      # show what would be processed, no LLM calls
     python run.py all --force        # re-process already-processed jobs
+    python run.py all --last 1       # only the most recently saved job
     python run.py all --scraper playwright    # default; Playwright MCP
     python run.py all --scraper browsermcp     # legacy fallback; Browser MCP
     python run.py all --legacy-docx   # render via docx_writer + LibreOffice
@@ -299,8 +300,24 @@ def _load_cached_jobs() -> list[SavedJob]:
             description=data.get("description", "") or "",
             job_id=data.get("job_id", "") or "",
             warnings=data.get("warnings", []) or [],
+            saved_order=int(data.get("saved_order", -1) or -1),
         ))
     return jobs
+
+
+def _sort_by_recency(jobs: list[SavedJob]) -> list[SavedJob]:
+    """Sort cached jobs by how recently they were saved.
+
+    - Jobs with a `saved_at_iso` timestamp sort first, most recent first.
+    - Jobs without a timestamp (old cache) sort after, using `saved_order`
+      (1 = most recently saved in the latest extraction, because LinkedIn
+      orders its saved-jobs listing by recency).
+    """
+    dated = [j for j in jobs if (j.saved_at_iso or "").strip()]
+    undated = [j for j in jobs if not (j.saved_at_iso or "").strip()]
+    dated.sort(key=lambda j: j.saved_at_iso, reverse=True)
+    undated.sort(key=lambda j: j.saved_order)
+    return dated + undated
 
 
 # --------------------------------------------------------------------------- #
@@ -693,6 +710,10 @@ def cmd_tailor(args: argparse.Namespace) -> int:
             return 2
     if args.new:
         jobs = [j for j in jobs if not _is_processed(j)]
+    if args.last and args.last > 0:
+        # "última(s) oferta(s) guardada(s)" — sort by recency, take the newest N.
+        jobs = _sort_by_recency(jobs)[: args.last]
+        log.info("--last %d: procesando %d oferta(s) más recientemente guardada(s)", args.last, len(jobs))
     if args.limit and args.limit > 0:
         jobs = jobs[: args.limit]
     if _needs_bulk_confirm(args, len(jobs)):
@@ -733,6 +754,9 @@ def cmd_all(args: argparse.Namespace) -> int:
     jobs = do_extract(target_url=job_url, scraper_backend=args.scraper)
     if args.new:
         jobs = [j for j in jobs if not _is_processed(j)]
+    if args.last and args.last > 0:
+        jobs = _sort_by_recency(jobs)[: args.last]
+        log.info("--last %d: procesando %d oferta(s) más recientemente guardada(s)", args.last, len(jobs))
     if args.limit and args.limit > 0:
         jobs = jobs[: args.limit]
     if _needs_bulk_confirm(args, len(jobs)):
@@ -959,6 +983,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="skip the bulk-confirm prompt when >1 job targeted")
         p.add_argument("--job", metavar="URL", help="process only this specific job URL")
         p.add_argument("--limit", type=int, default=0, help="process at most N jobs (0=all)")
+        p.add_argument("--last", type=int, default=0,
+                       help="process only the N most recently saved jobs "
+                            "(0=all); sorts by saved_at_iso desc, falling back "
+                            "to the saved-jobs listing order")
         p.add_argument("--scraper", default=settings.scraper_backend,
                        choices=("playwright", "browsermcp"),
                        help="scraper backend: 'playwright' (default) or 'browsermcp' (legacy)")

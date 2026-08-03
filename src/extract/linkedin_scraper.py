@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,93 @@ def _normalize_job_url(url: str) -> str:
     return url
 
 
+# --------------------------------------------------------------------------- #
+# Saved-at timestamps ("Guardado hace X días" / "Saved N days ago")           #
+# --------------------------------------------------------------------------- #
+
+# Matches the relative save-time label LinkedIn renders on saved-jobs cards.
+# Spanish:  Guardado hoy / Guardado ayer / Guardado hace 3 días
+# English:  Saved today / Saved yesterday / Saved 3 days ago
+_RELATIVE_SAVED_RE = re.compile(
+    r"(?:Guardado|Saved)\s+"
+    r"(hoy|today|ayer|yesterday|"
+    r"hace\s+(\d+)\s+"
+    r"(minutos?|minute|minutes|horas?|hour|hours|días?|dias?|day|days|"
+    r"semanas?|week|weeks|mes(?:es)?|month|months|años?|anos?|year|years)|"
+    r"(\d+)\s+"
+    r"(minutos?|minute|minutes|horas?|hour|hours|días?|dias?|day|days|"
+    r"semanas?|week|weeks|mes(?:es)?|month|months|años?|anos?|year|years)\s+ago)",
+    re.IGNORECASE,
+)
+
+_SAVED_UNITS_DAYS: dict[str, float] = {
+    "minuto": 1 / 1440, "minutos": 1 / 1440, "minute": 1 / 1440, "minutes": 1 / 1440,
+    "hora": 1 / 24, "horas": 1 / 24, "hour": 1 / 24, "hours": 1 / 24,
+    "día": 1, "días": 1, "dia": 1, "dias": 1, "day": 1, "days": 1,
+    "semana": 7, "semanas": 7, "week": 7, "weeks": 7,
+    "mes": 30, "meses": 30, "month": 30, "months": 30,
+    "año": 365, "años": 365, "ano": 365, "anos": 365, "year": 365, "years": 365,
+}
+
+
+def _parse_relative_saved_to_iso(label: str, now: datetime | None = None) -> str:
+    """Convert a 'Guardado hace X días' / 'Saved N days ago' label into an ISO
+    timestamp (UTC). Returns '' when the label can't be parsed."""
+    if not label:
+        return ""
+    now = now or datetime.now(timezone.utc)
+    low = label.lower()
+    if "hoy" in low or "today" in low:
+        delta = timedelta(days=0)
+    elif "ayer" in low or "yesterday" in low:
+        delta = timedelta(days=1)
+    else:
+        m = _RELATIVE_SAVED_RE.search(label)
+        if not m:
+            return ""
+        num = m.group(2) or m.group(4)
+        unit = (m.group(3) or m.group(5) or "").lower()
+        if not num or unit not in _SAVED_UNITS_DAYS:
+            return ""
+        try:
+            delta = timedelta(days=_SAVED_UNITS_DAYS[unit] * float(num))
+        except (TypeError, ValueError):
+            return ""
+    return (now - delta).isoformat(timespec="seconds")
+
+
+def _extract_saved_times(snapshot_text: str, now: datetime | None = None) -> dict[str, str]:
+    """Best-effort map of canonical job URL -> saved-at ISO timestamp, parsed
+    from the "Guardado hace X ..." / "Saved N ... ago" labels of the saved-jobs
+    listing. Labels are paired with the nearest job URL (before or after).
+
+    Empty dict means no relative labels were found — callers should fall back
+    to the listing ORDER (`SavedJob.saved_order`) instead.
+    """
+    result: dict[str, str] = {}
+    current_url = ""
+    pending_time = ""
+    for line in snapshot_text.splitlines():
+        iso = ""
+        if _RELATIVE_SAVED_RE.search(line):
+            iso = _parse_relative_saved_to_iso(line, now=now)
+        m_url = JOB_URL_RE.search(line)
+        if m_url:
+            job_id = m_url.group(1) or m_url.group(2) or ""
+            current_url = (
+                f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else m_url.group(0)
+            )
+            assign = iso or pending_time
+            if assign and current_url not in result:
+                result[current_url] = assign
+            pending_time = ""
+        elif iso and current_url and current_url not in result:
+            result[current_url] = iso
+        elif iso:
+            pending_time = iso
+    return result
+
+
 @dataclass
 class SavedJob:
     """Public interface for a scraped LinkedIn saved job."""
@@ -127,6 +215,10 @@ class SavedJob:
     job_id: str = ""
     # Internal: any parse-time warnings (eg. couldn't find description).
     warnings: list[str] = field(default_factory=list)
+    # Position of this job in the saved-jobs LISTING (1 = most recently saved,
+    # because LinkedIn orders saved jobs by recency). Used as a fallback
+    # "saved date" when the relative "Guardado hace X" label isn't available.
+    saved_order: int = -1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -840,6 +932,10 @@ async def extract_saved_jobs(
             log.info("login detectado — continuando con el scraping...")
         job_urls = _extract_job_urls(list_snapshot)
         log.info("found %d saved-job URLs in snapshot", len(job_urls))
+        # Best-effort saved-at timestamps from the "Guardado hace X ..." labels.
+        saved_times = _extract_saved_times(list_snapshot)
+        if saved_times:
+            log.info("parsed saved-at timestamps for %d job(s)", len(saved_times))
 
         # 2. Visit each job page and parse.
         jobs: list[SavedJob] = []
@@ -889,15 +985,19 @@ async def extract_saved_jobs(
                     job = _parse_job_detail(snap, url)
                 if job.warnings:
                     log.warning("parse warnings for %s: %s", url, job.warnings)
+                job.saved_at_iso = saved_times.get(url, "")
+                job.saved_order = idx
                 jobs.append(job)
                 if on_progress:
                     on_progress(idx, len(job_urls), job)
             except McpError as e:
                 log.warning("MCP error on %s: %s", url, e)
-                jobs.append(SavedJob(title="", url=url, warnings=[f"mcp_error: {e}"]))
+                jobs.append(SavedJob(title="", url=url, saved_order=idx,
+                                     warnings=[f"mcp_error: {e}"]))
             except Exception as e:
                 log.warning("scrape failed for %s: %s", url, e)
-                jobs.append(SavedJob(title="", url=url, warnings=[f"scrape_error: {e}"]))
+                jobs.append(SavedJob(title="", url=url, saved_order=idx,
+                                     warnings=[f"scrape_error: {e}"]))
         return jobs
     finally:
         try:
@@ -928,7 +1028,9 @@ __all__ = [
     "scrape_saved_jobs",
     "save_jobs_json",
     "_extract_job_urls",
+    "_extract_saved_times",
     "_parse_job_detail",
+    "_parse_relative_saved_to_iso",
     "_scrape_single_job",
     "_job_id_from_url",
     "_normalize_job_url",
