@@ -7,8 +7,8 @@
 input/*.docx
 input/*.doc
 input/*.pdf
-input/*.html
 input/base_cv.*
+input/preferences.txt
 
 # --- Playwright persistent profile (contains LinkedIn session) ---
 .playwright-profile/
@@ -61,3 +61,6 @@ desktop.ini
 # --- Opencode / MCP local config (user-specific) ---
 opencode.jsonc
 .mcp.json
+
+# --- User-local prompt overrides (never committed; survive git pull) ---
+prompts/*.override.txt

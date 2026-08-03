@@ -16,14 +16,16 @@ El proyecto **no almacena, transmite ni vende** tus credenciales de LinkedIn. To
 
 ## Qué hace
 
-Dado tu CV base en formato HTML (texto plano + hipervínculos, sin imágenes), el sistema:
+Dado tu CV base en formato **YAML** (`input/base_cv.yaml`, validado contra
+`schema/base_cv.schema.json`), el sistema:
 
 1. **Extrae** — se conecta a tu sesión de LinkedIn vía Playwright MCP (con `--user-data-dir` persistente para no tener que reloguearte), navega a la página de "Empleos guardados" y obtiene de cada oferta: título, empresa, ubicación y descripción completa. También puedes pasar **cualquier URL de LinkedIn** (no solo ofertas guardadas) con `--job <url>` y el scraper la procesa directamente.
-2. **Adapta** — llama a un LLM para reescribir el CV alineándolo de forma natural con los requisitos de la oferta, sin inventar skills ni copiar frases literales.
-3. **Evalúa** — un segundo pase del LLM revisa el CV adaptado contra la oferta y tu CV base, marcando alucinaciones o copias literales.
-4. **Repara** — si el evaluador encontró problemas semánticos, un tercer pase corrige solo lo marcado.
-5. **Renderiza** — Jinja2 produce `cv.html` y Playwright genera `cv.pdf`.
-6. **Revisión opcional** — `python run.py review <job_slug>` abre el CV en tu navegador para editarlo a mano y regenerar el PDF en vivo.
+2. **Resume la oferta** — un pase del LLM convierte la descripción cruda en un resumen estructurado (`requisitos_duros` / `skills_deseadas` / `funciones_clave`), cacheado una sola vez por oferta. Es lo único que viaja a los pases siguientes (gran ahorro de tokens).
+3. **Adapta** — llama a un LLM para reescribir el CV alineándolo de forma natural con la oferta, sin inventar skills ni copiar frases literales.
+4. **Evalúa** — un segundo pase del LLM revisa el CV adaptado contra la oferta y tu CV base, marcando alucinaciones o copias literales (configurable: `ENABLE_EVALUATION=false` lo desactiva).
+5. **Repara** — si el evaluador encontró problemas semánticos, un tercer pase corrige solo lo marcado.
+6. **Renderiza** — Jinja2 produce `cv.html` y Playwright genera `cv.pdf`.
+7. **Revisión opcional** — `python run.py review <job_slug>` abre el CV en tu navegador para editarlo a mano y regenerar el PDF en vivo.
 
 Para cada oferta se genera una carpeta (anidada por fecha):
 
@@ -115,13 +117,32 @@ Abre `.env` y completa:
 
 **4. Colocar tu CV base**
 
-Crea tu CV base en HTML plano (texto + hipervínculos, sin imágenes) y guárdalo en:
+Tu CV base vive en `input/base_cv.yaml` (formato YAML validado contra
+`schema/base_cv.schema.json`). Tienes dos formas de generarlo:
 
-```
-input/base_cv.html
+- **(a) Con tu agente de código** (recomendado, sin escribir YAML a mano):
+  pega tu CV actual en PDF o Word y dile algo como:
+  *"generá mi CV base a partir de este PDF"*. El agente lee el schema + el
+  ejemplo, mapea tus secciones, escribe `input/base_cv.yaml` y lo valida por
+  vos.
+- **(b) Con cualquier chat de IA**: copia el contenido de
+  [`PROMPT_PARA_TU_CV.md`](PROMPT_PARA_TU_CV.md), pega tu CV y guarda el YAML
+  resultante en `input/base_cv.yaml`.
+
+En ambos casos, valida el archivo con:
+
+```bash
+python scripts/validate_base_cv.py input/base_cv.yaml
 ```
 
-Puedes guiarte con `scripts/build_base_cv.py` para generar una plantilla básica.
+> ⚠️ El **layout visual** de tu CV original (columnas, íconos, foto, colores)
+> **no se conserva** — solo el contenido. El PDF final siempre usa el único
+> template Harvard del repo. Es intencional: garantiza un look consistente
+> entre todos los usuarios.
+>
+> Como referencia, `schema/example.yaml` muestra un CV completo con los 3
+> tipos de sección, y `python scripts/build_base_cv.py` genera una plantilla
+> con placeholders.
 
 **5. Loguearte en LinkedIn (una sola vez)**
 
@@ -190,6 +211,11 @@ Si instalaste el skill (Opción A arriba), simplemente dile en lenguaje natural:
 - *"Regenerá el de [url] que no me convenció"*
 - *"Listá los CVs que ya generé"*
 - *"Editá el de [job_slug] en el navegador"*
+- *"Convertime mi CV a base_cv.yaml"* / *"generá mi CV base a partir de este PDF"* —
+  el agente lee `schema/base_cv.schema.json` + `schema/example.yaml`, mapea tus
+  secciones reales a los 3 tipos (`entry_block` / `simple_list` / `text_block`),
+  escribe `input/base_cv.yaml`, lo valida con `scripts/validate_base_cv.py` y
+  autocorrige hasta que pase — sin que tengas que interpretar errores.
 
 El asistente traduce tu pedido a los flags correctos del CLI y lo ejecuta por vos.
 
@@ -206,7 +232,9 @@ El asistente traduce tu pedido a los flags correctos del CLI y lo ejecuta por vo
 | `LLM_REQUEST_TIMEOUT` | `120` | Timeout por request HTTP al LLM (segundos) |
 | `SCRAPER_BACKEND` | `playwright` | `playwright` (default) o `browsermcp` (legacy) |
 | `LINKEDIN_SAVED_JOBS_URL` | `https://www.linkedin.com/my-items/saved-jobs/` | URL de empleos guardados |
-| `BASE_CV_PATH` | `input/base_cv.html` | Ruta a tu CV base |
+| `BASE_CV_PATH` | `input/base_cv.yaml` | Ruta a tu CV base en YAML |
+| `PREFERENCES_PATH` | `input/preferences.txt` | Preferencias personales del candidato (opcional) |
+| `ENABLE_EVALUATION` | `true` | Si `false`, salta evaluador + reparador (más barato, pero nadie detecta alucinaciones ni copiado literal de la oferta) |
 | `OUTPUT_DIR` | `output` | Dónde se escriben los CVs |
 | `REVIEW_HOST` | `localhost` | Host del servidor de revisión |
 | `REVIEW_PORT` | `8420` | Puerto del servidor de revisión |
@@ -217,11 +245,39 @@ Si la API devuelve `429 GoUsageLimitError`, el tier mensual se agotó. Cambiá l
 
 ---
 
+## Prompts editables (`prompts/`)
+
+Los system prompts de cada pase viven en archivos de texto plano, legibles y
+editables sin tocar código:
+
+```
+prompts/
+├── tailor_system.txt
+├── evaluator_system.txt
+├── repair_system.txt
+└── job_summarizer_system.txt
+```
+
+Para personalizar un prompt, creá `prompts/<nombre>.override.txt` (gitignored):
+se usa en lugar del default y sobrevive a `git pull` sin conflictos de merge.
+
+## Preferencias personales (`input/preferences.txt`, opcional)
+
+Si querés que el LLM siga reglas tuyas (ej. *"el resumen debe empezar con 'En
+búsqueda de un puesto en...'"*), escribilas en `input/preferences.txt` (texto
+plano; las líneas que empiezan con `#` se ignoran). Ver la plantilla comentada
+en `input/preferences.example.txt`. Se inyectan en los tres pases como
+"INSTRUCCIONES PERSONALES DEL CANDIDATO", siempre subordinadas a las reglas
+críticas (no inventar datos, no copiar literal de la oferta).
+
+---
+
 ## Seguridad / privacidad
 
-- `.env`, `input/base_cv.html` y `.playwright-profile/` están gitignored — ni tu CV ni tus cookies salen de tu máquina vía git.
+- `.env`, `input/base_cv.yaml`, `input/preferences.txt` y `.playwright-profile/` están gitignored — ni tu CV ni tus cookies salen de tu máquina vía git.
 - El scraping usa tu sesión real de Chromium — ninguna contraseña se almacena en el proyecto.
 - Las URLs del CV base están protegidas: no aparecen en los prompts del LLM y se reinsertan byte-identical después del adaptador.
+- El texto de las ofertas de LinkedIn se trata como **datos no confiables**: el único pase que lo procesa crudo (el job summarizer) declara explícitamente que nunca es una instrucción a seguir (mitigación de prompt injection).
 - Los prompts van a tu proveedor LLM con la política de retención que tenga (OpenCode Go: cero retención).
 
 ---

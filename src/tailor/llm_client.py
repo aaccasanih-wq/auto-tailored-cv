@@ -1,4 +1,4 @@
-"""LLM client for any OpenAI-compatible endpoint (defaults: OpenCode Go + GLM 5.2).
+"""LLM client for any OpenAI-compatible endpoint (defaults: OpenCode Go + DeepSeek V4 Flash).
 
 OpenCode Go serves models at `https://opencode.ai/zen/go/v1`, fully compatible
 with the OpenAI Chat Completions API. The same client works for any provider
@@ -69,8 +69,14 @@ class LLMClient:
         json_mode: bool = True,
         temperature: float = 0.4,
         max_tokens: int | None = None,
+        tag: str = "",
     ) -> LLMResponse:
-        """Single-turn chat completion. Returns the first message content."""
+        """Single-turn chat completion. Returns the first message content.
+
+        `tag` is a free-form label (e.g. "tailor", "evaluate", "repair",
+        "job_summary" + job context) used in the token-usage log so the user
+        can see where tokens are spent.
+        """
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -85,9 +91,22 @@ class LLMClient:
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        log.debug("LLM call model=%s json_mode=%s", model, json_mode)
+        log.debug("LLM call model=%s json_mode=%s tag=%s", model, json_mode, tag)
         completion = self._client.chat.completions.create(**kwargs)
         content = completion.choices[0].message.content or ""
+        # Token-usage visibility (FASE 4.1): log per-pass prompt/completion/
+        # total tokens so the user can see where the budget goes before any
+        # further optimization.
+        usage = getattr(completion, "usage", None)
+        if usage is not None:
+            log.info(
+                "LLM usage [%s]: prompt=%s completion=%s total=%s model=%s",
+                tag or "untagged",
+                getattr(usage, "prompt_tokens", "?"),
+                getattr(usage, "completion_tokens", "?"),
+                getattr(usage, "total_tokens", "?"),
+                model,
+            )
         log.debug("LLM call returned %d chars", len(content))
         return LLMResponse(content=content, model=model, raw=completion)
 

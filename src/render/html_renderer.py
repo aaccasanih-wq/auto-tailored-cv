@@ -1,19 +1,18 @@
-"""Render an `analysis.json` tailored CV into `cv.html` via Jinja2.
+"""Render a tailored analysis.json CV into `cv.html` via Jinja2.
 
-The renderer uses `templates/cv_template.html` and reuses `templates/cv_style.css`.
-The HTML it produces is identical in styling to `input/base_cv.html` — same CSS
-file, same `.entry-block` / `.project-block` primitives — so the tailored CV's
-look-and-feel matches the base CV.
+The renderer uses `templates/cv_template.html` and `templates/cv_style.css`.
+It is fully generic over the section `type` (entry_block / simple_list /
+text_block) — section names are just titles, so any combination/order of
+sections renders consistently in the same Harvard style.
 
-Hyperlinks (`enlaces`) are emitted from the protected `enlaces` arrays of
+Hyperlinks (`links`) are emitted from the protected `links` arrays of
 `analysis.json`; URLs never reach the LLM, so they survive the tailor pass and
 the renderer writes them straight from the base structure.
 
 Each rewritable text node carries `contenteditable="true"` and a unique
-`data-field` attribute (e.g. `summary`, `section.2.entry.0.bullet.3`,
-`section.3.entry.1.subtitulo`). The review step (src/review/server.py) lets the
-user edit those in place; on save, the entire `outerHTML` of the page is sent to
-the server, which re-renders the PDF.
+`data-field` attribute. The review step (src/review/server.py) lets the user
+edit those in place; on save the whole outerHTML is sent back and the PDF is
+re-rendered.
 
 Output: `output/<job_slug>/cv.html`. The CSS file is copied next to it so the
 page is self-contained when opened from disk.
@@ -40,110 +39,84 @@ def _env() -> Environment:
         trim_blocks=False,
         lstrip_blocks=False,
     )
-    env.filters["project_links_html"] = _build_project_links_html
+    env.filters["entry_links_html"] = _build_entry_links_html
     return env
 
 
-def _build_project_links_html(value: Any) -> str:
-    """Jinja2 filter: given an entry dict with `descriptor` + `enlaces`,
-    return the inline HTML for the project-links paragraph (without the
-    surrounding `<p>` tag — the template adds that).
+def _build_entry_links_html(value: Any) -> str:
+    """Jinja2 filter: given an entry dict with `links`, return the inline HTML
+    for its links paragraph (without the surrounding `<p>` tag — the template
+    adds that).
 
-    Rules:
-    - If there's a non-empty descriptor, render it inside parens. For each
-      enlace whose `texto` is a substring of the descriptor, replace the
-      first occurrence with `<a href="url">texto</a>`. Any enlace whose
-      texto is NOT in the descriptor is appended after a " · " separator.
-    - If there's no descriptor but there are enlaces, render the enlaces
-      as `tex · text · ` joins inside parens, each clickable.
-    - If neither: return empty string.
+    Each protected link renders as `<a href="url">label</a>`; links are joined
+    with " · ". Works for ANY entry_block section, not only "proyectos".
     """
     if not isinstance(value, dict):
         return ""
-    descriptor = (value.get("descriptor") or "").strip()
-    enlaces = value.get("enlaces") or []
-    # Strip surrounding parens from descriptor; we add them ourselves.
-    if descriptor.startswith("(") and descriptor.endswith(")"):
-        descriptor = descriptor[1:-1].strip()
-    if not descriptor and not enlaces:
-        return ""
+    links = value.get("links") or []
     parts: list[str] = []
-    if descriptor:
-        for enlace in enlaces:
-            texto = (enlace.get("texto") or "").strip()
-            url = (enlace.get("url") or "").strip()
-            if not texto or not url:
-                continue
-            if texto in descriptor:
-                anchor = f'<a href="{url}" target="_blank">{texto}</a>'
-                descriptor = descriptor.replace(texto, anchor, 1)
-            else:
-                parts.append(f'<a href="{url}" target="_blank">{texto}</a>')
-        rendered = descriptor
-        if parts:
-            rendered += ' <span class="sep">·</span> ' + ' <span class="sep">·</span> '.join(parts)
-        return f"({rendered})"
-    else:
-        links = []
-        for enlace in enlaces:
-            texto = (enlace.get("texto") or "").strip()
-            url = (enlace.get("url") or "").strip()
-            if not texto:
-                continue
-            if url:
-                links.append(f'<a href="{url}" target="_blank">{texto}</a>')
-            else:
-                links.append(texto)
-        if not links:
-            return ""
-        return "(" + ' <span class="sep">·</span> '.join(links) + ")"
-
-
-def _build_contact_html(
-    contact_text: str,
-    contact_enlaces: list[dict[str, str]],
-) -> str:
-    """Reconstruct the contact-line HTML by substituting each placeholder for
-    `<a href>`. The base CV's contact line has the form:
-        "PHONE | EMAIL | Sitio web | Mis Proyectos | DNI | City"
-    where the link text labels ("Sitio web", "Mis Proyectos") are placeholders
-    substituted with `<a>`. We replace them in order.
-    """
-    text = contact_text
-    for enlace in contact_enlaces:
-        label = enlace.get("texto", "")
-        url = enlace.get("url", "")
-        if not label or not url:
+    for link in links:
+        label = (link.get("label") or "").strip()
+        url = (link.get("url") or "").strip()
+        if not label:
             continue
-        anchor = f'<a href="{url}" target="_blank">{label}</a>'
-        text = text.replace(label, anchor, 1)
-    return text
+        if url:
+            parts.append(f'<a href="{url}" target="_blank">{label}</a>')
+        else:
+            parts.append(label)
+    return ' <span class="sep">·</span> '.join(parts)
+
+
+def _build_contact_html(personal_info: dict[str, Any]) -> str:
+    """Build the header contact line HTML from `personal_info`:
+    `phone | email | location | <a href>label</a> | ...`."""
+    parts: list[str] = []
+    for key in ("phone", "email", "location"):
+        value = (personal_info.get(key) or "").strip()
+        if value:
+            parts.append(value)
+    for link in personal_info.get("links") or []:
+        label = (link.get("label") or "").strip()
+        url = (link.get("url") or "").strip()
+        if not label:
+            continue
+        if url:
+            parts.append(f'<a href="{url}" target="_blank">{label}</a>')
+        else:
+            parts.append(label)
+    return " | ".join(parts)
 
 
 def _coerce_sections(profile_data: dict[str, Any]) -> dict[str, Any]:
     """Normalize an analysis.json / CVProfile dict into the shape the Jinja
     template expects. Mutates the dict in place; returns it.
 
-    - Sections always have `kind`.
-    - If the input has `contact_enlaces`, build `contact_html` and drop it.
-    - `enlaces` per entry is preserved as-is (used by the renderer).
+    - Ensures `personal_info` exists and derives `contact_html`.
+    - Ensures every section has the generic `type`-based fields (`entries`,
+      `items`, `text`) with sane defaults.
     """
-    contact_enlaces = profile_data.pop("contact_enlaces", None) or []
-    contact_html = _build_contact_html(
-        profile_data.get("contact", ""),
-        contact_enlaces,
-    )
-    profile_data["contact_html"] = contact_html
-    # Sections: ensure 'enlaces' arrays are present (default empty list).
+    profile_data.setdefault("personal_info", {})
+    personal_info = profile_data["personal_info"]
+    if not isinstance(personal_info, dict):
+        personal_info = {}
+        profile_data["personal_info"] = personal_info
+    profile_data["contact_html"] = _build_contact_html(personal_info)
+
     sections = profile_data.get("sections", []) or []
     for s in sections:
+        if not isinstance(s, dict):
+            continue
         for entry in s.get("entries", []) or []:
-            entry.setdefault("enlaces", [])
-            entry.setdefault("subtitulo", "")
-            entry.setdefault("descriptor", "")
-            entry.setdefault("bullets", [])
-        s.setdefault("table", [])
+            if isinstance(entry, dict):
+                entry.setdefault("subheading", "")
+                entry.setdefault("location", "")
+                entry.setdefault("dates", "")
+                entry.setdefault("links", [])
+                entry.setdefault("bullets", [])
         s.setdefault("entries", [])
+        s.setdefault("items", [])
+        s.setdefault("text", "")
+        s.setdefault("type", "")
     return profile_data
 
 
@@ -188,10 +161,9 @@ def render_from_file(
     base_cv_path: Path | None = None,
     out_dir: Path | None = None,
 ) -> Path:
-    """Convenience wrapper: read analysis.json + base_cv.html metadata,
-    merge, and render. Used by the `review` subcommand when only the
-    analysis.json is available (the base CV provides `name`, `contact`,
-    and `contact_enlaces` for the header).
+    """Convenience wrapper: read analysis.json + base_cv.yaml metadata, merge,
+    and render. Used by the `review` subcommand when only the analysis.json is
+    available (the base CV provides `personal_info` for the header).
     """
     import json
 
@@ -199,18 +171,16 @@ def render_from_file(
     with analysis_path.open("r", encoding="utf-8") as f:
         analysis = json.load(f)
 
-    # If name/contact are missing in analysis.json, supplement from base CV.
+    # If personal_info is missing in analysis.json, supplement from base CV.
     base_path = base_cv_path or settings.base_cv_path
     if base_path.exists():
         from src.profile.cv_reader import read_cv
         base_profile = read_cv(base_path)
-        analysis.setdefault("name", base_profile.name)
-        analysis.setdefault("contact", base_profile.contact)
-        analysis.setdefault("contact_enlaces", [e.to_dict() for e in base_profile.contact_enlaces])
+        analysis.setdefault("personal_info", base_profile.personal_info.to_dict())
         analyses_sections = analysis.get("sections", []) or []
-        # Make sure section kind is set (LLM should include it but be defensive).
-        base_by_title = {s.title: s.kind for s in base_profile.sections}
+        # Make sure section `type` is set (LLM should include it but be defensive).
+        base_by_title = {s.title: s.type for s in base_profile.sections}
         for s in analyses_sections:
-            s.setdefault("kind", base_by_title.get(s.get("title", ""), ""))
+            s.setdefault("type", base_by_title.get(s.get("title", ""), ""))
 
     return render(analysis, out_dir or analysis_path.parent)

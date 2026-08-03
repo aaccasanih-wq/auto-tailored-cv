@@ -2,18 +2,16 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>{{ name }} — CV</title>
+<title>{{ personal_info.name }} — CV</title>
 <link rel="stylesheet" href="cv_style.css">
 </head>
 <body>
 
-  <!-- ============ ENCABEZADO ============ -->
+  <!-- ============ ENCABEZADO (centrado) ============ -->
   <div class="header">
-    <div class="header-main">
-      <p class="name">{{ name }}</p>
-      <p class="contact-line">{{ contact_html|safe }}</p>
-      <p class="tagline" contenteditable="true" data-field="summary">{{ summary }}</p>
-    </div>
+    <p class="name">{{ personal_info.name }}</p>
+    <p class="contact-line">{{ contact_html|safe }}</p>
+    <p class="tagline" contenteditable="true" data-field="summary">{{ summary }}</p>
   </div>
 
   {% for section in sections %}
@@ -21,70 +19,50 @@
   <div class="section">
     <p class="section-title">{{ section.title }}</p>
 
-    {% if section.kind == 'habilidades' %}
-      <table class="skills-table">
-        {% for row in section.table %}
-          {% set ri = loop.index0 %}
-        <tr>
-          <td class="skill-label">{{ row[0] }}</td>
-          <td contenteditable="true"
-              data-field="section.{{ si }}.table.{{ ri }}">{{ row[1] if row|length > 1 else '' }}</td>
-        </tr>
+    {% if section.type == 'text_block' %}
+      <p class="text-block" contenteditable="true"
+         data-field="section.{{ si }}.text">{{ section.text }}</p>
+
+    {% elif section.type == 'simple_list' %}
+      <ul class="simple-list">
+        {% for item in section['items'] %}
+        <li contenteditable="true"
+            data-field="section.{{ si }}.item.{{ loop.index0 }}">{{ item.text }}</li>
         {% endfor %}
-      </table>
+      </ul>
 
-    {% elif section.kind == 'educacion' %}
+    {% elif section.type == 'entry_block' %}
       {% for entry in section.entries %}
         {% set ei = loop.index0 %}
       <div class="entry-block">
         <div class="entry-row">
-          <span class="entry-title">{{ entry.titulo }}</span>
-          <span class="entry-date">{{ entry.fecha }}</span>
+          <span class="entry-title">{{ entry.heading }}</span>
+          <span class="entry-date">{{ entry.dates }}</span>
         </div>
-        {% if entry.subtitulo %}
+        {% if entry.subheading %}
         <p class="entry-subtitle" contenteditable="true"
-           data-field="section.{{ si }}.entry.{{ ei }}.subtitulo">{{ entry.subtitulo }}</p>
+           data-field="section.{{ si }}.entry.{{ ei }}.subheading">{{ entry.subheading }}</p>
         {% endif %}
-      </div>
-      {% endfor %}
-
-    {% elif section.kind == 'experiencia' %}
-      {% for entry in section.entries %}
-        {% set ei = loop.index0 %}
-      <div class="entry-block">
-        <div class="entry-row">
-          <span class="entry-title">{{ entry.titulo }}</span>
-          <span class="entry-date">{{ entry.fecha }}</span>
-        </div>
+        {% if entry.location %}
+        <p class="entry-location">{{ entry.location }}</p>
+        {% endif %}
+        {% set ehtml = entry|entry_links_html %}
+        {% if ehtml %}
+        <p class="entry-links">{{ ehtml|safe }}</p>
+        {% endif %}
         <ul class="bullets">
           {% for bullet in entry.bullets %}
           <li contenteditable="true"
-              data-field="section.{{ si }}.entry.{{ ei }}.bullet.{{ loop.index0 }}">{{ bullet }}</li>
+              data-field="section.{{ si }}.entry.{{ ei }}.bullet.{{ loop.index0 }}">{{ bullet.text }}</li>
           {% endfor %}
         </ul>
       </div>
       {% endfor %}
 
-    {% elif section.kind == 'proyectos' %}
-      {% for entry in section.entries %}
-        {% set ei = loop.index0 %}
-      <div class="project-block">
-        <div class="project-header">
-          <span class="project-title">{{ entry.titulo }}</span>
-          <span class="entry-date">{{ entry.fecha }}</span>
-        </div>
-        {% set plinks = entry|project_links_html %}
-        {% if plinks %}
-        <p class="project-links">{{ plinks|safe }}</p>
-        {% endif %}
-        <ul class="bullets">
-          {% for bullet in entry.bullets %}
-          <li contenteditable="true"
-              data-field="section.{{ si }}.entry.{{ ei }}.bullet.{{ loop.index0 }}">{{ bullet }}</li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endfor %}
+    {% else %}
+      <!-- Fallback visible: un tipo no soportado debe ser obvio durante
+           desarrollo/testing, no desaparecer en silencio. -->
+      <p class="unsupported-type">⚠️ Sección con tipo no soportado: '{{ section.type }}'</p>
     {% endif %}
   </div>
   {% endfor %}

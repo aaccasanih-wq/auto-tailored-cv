@@ -42,13 +42,15 @@ def evaluate(
     tailored_json: dict[str, Any],
     model: str | None = None,
     temperature: float = 0.1,
+    user_preferences: str = "",
 ) -> EvaluationResult:
     """Run the evaluator pass. Always returns an EvaluationResult (possibly with empty issues)."""
     model = model or settings.llm_model_evaluator
-    system, user = build_evaluator_prompt(base_cv, job, tailored_json)
+    system, user = build_evaluator_prompt(base_cv, job, tailored_json, user_preferences)
     log.info("evaluate: model=%s", model)
     response = client.chat(
-        model=model, system=system, user=user, json_mode=True, temperature=temperature
+        model=model, system=system, user=user, json_mode=True, temperature=temperature,
+        tag="evaluate",
     )
     return parse_evaluation(response)
 

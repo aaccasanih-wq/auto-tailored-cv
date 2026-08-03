@@ -16,23 +16,18 @@ The project does **not** store, transmit, or sell your LinkedIn credentials. All
 
 ## What it does
 
-Given a folder containing your base CV in HTML format (plain text + hyperlinks, no images), the system:
+Given your base CV in YAML format (`input/base_cv.yaml`, validated against
+`schema/base_cv.schema.json`), the system:
 
-1. **Extracts** — connects to your LinkedIn session via Playwright MCP (with `--user-data-dir` persistence so your login survives across runs), navigates to your saved jobs page, and pulls each saved job's title, company, location, requirements, and full description. The auto-wait (`browser_wait_for`) resolves the historical problem of LinkedIn pages that didn't finish loading before the snapshot, and the scraper now clicks the "...más" / "See more" button that LinkedIn renders on long job descriptions so the full text is captured (not just the first ~400 chars).
-2. **Profiles** — reads your base `.html` CV with BeautifulSoup4 and structures it into typed sections (`educación`, `experiencia`, `proyectos`, `habilidades`). Hyperlinks are extracted as protected `{texto, url}` objects — URLs **never** reach the LLM.
-3. **Tailors** — calls an LLM (via any OpenAI-compatible endpoint; default OpenCode Go subscription + DeepSeek V4 Flash) to rewrite the CV so it aligns naturally with each job's requirements. The prompt explicitly forbids:
-   - inventing new skills or experiences you don't have,
-   - copying phrases verbatim from the job posting,
-   - keyword stuffing,
-   - changing dates or roles,
-   - inventing or modifying URLs / hyperlinks (they are protected end-to-end),
-   - leaving dangling empty parentheses "()" in the project `descriptor`.
-   The prompt **allows**: reordering projects by relevance, removing a project entirely if it doesn't add to this application, editing the parenthetical `descriptor` of a project (e.g. turning "(Agentic AI · RAG · Automatización)" into "(IA · Automatización · RAG)" or into an empty string when it doesn't add value), and splitting a long bullet into two shorter ones (or merging two into one) when the result is clearer. The first bullet of each project must describe **what the project is / does / solves**; subsequent bullets follow with implementation details.
-4. **Evaluates** — a second LLM pass reviews the tailored CV against the job posting and your base CV, flagging hallucinations, incongruities, format issues, and any "forced" alignment. The evaluator is aware of the section-specific rules above so it doesn't flag legitimate project reordering / removal / descriptor edits as format issues.
-5. **Repairs** — if the evaluator found issues, a third LLM pass fixes only the flagged problems.
-6. **Renders HTML** — Jinja2 renders `cv.html` from `templates/cv_template.html`, reusing `templates/cv_style.css`. The header (name, contact line, tagline) is **centered** at the top of the page. The project descriptor paragraph merges the (possibly edited) `descriptor` field with the protected `enlaces`: links whose text appears in the descriptor become inline `<a href>` anchors; any remaining links are appended after a " · " separator. Empty descriptors produce no parentheses. Each rewritable block carries `contenteditable="true"` + a unique `data-field` so you can edit in place.
-7. **Renders PDF** — Playwright Chromium headless converts `cv.html` → `cv.pdf` via `page.pdf(format="Letter", print_background=True)`.
-8. **Optional review** — `python run.py review <job_slug>` serves `cv.html` locally; edits hit `/save` and regenerate `cv.pdf` live in the browser.
+1. **Extracts** — connects to your LinkedIn session via Playwright MCP (with `--user-data-dir` persistence so your login survives across runs), navigates to your saved jobs page, and pulls each saved job's title, company, location, and full description. The scraper clicks the "...más" / "See more" button on long job descriptions so the full text is captured. You can also pass any LinkedIn job URL with `--job <url>`.
+2. **Summarizes the job** — an LLM pass reduces the raw description to a small structured summary (`requisitos_duros` / `skills_deseadas` / `funciones_clave`), cached once per offer. Only that summary travels to the later passes (big token saving). Because this is the only pass that processes the raw third-party job text, its system prompt explicitly treats it as untrusted DATA, never as instructions (prompt-injection mitigation).
+3. **Profiles** — reads `input/base_cv.yaml` (pyyaml + jsonschema) and structures it into **generic** sections: `entry_block`, `simple_list`, or `text_block`. Section names are just titles — any combination/order renders consistently. Hyperlinks are extracted as protected `{label, url}` objects — URLs **never** reach the LLM.
+4. **Tailors** — calls an LLM to rewrite the CV so it aligns naturally with each job's requirements. The prompt forbids inventing facts, copying phrases verbatim, keyword stuffing, changing dates/roles, or touching URLs. Behavior per section is driven by `type` + `reorderable`: `reorderable: true` sections may be reordered/trimmed; `reorderable: false` sections are strict 1:1.
+5. **Evaluates** — a second LLM pass reviews the tailored CV against the job summary and your base CV, flagging hallucinations, incongruities, format issues, and forced alignment (configurable with `ENABLE_EVALUATION=false`).
+6. **Repairs** — if the evaluator found issues, a third LLM pass fixes only the flagged problems.
+7. **Renders HTML** — Jinja2 renders `cv.html` from `templates/cv_template.html`, reusing `templates/cv_style.css`. The header (name, contact line, tagline) is **centered**. Each rewritable block carries `contenteditable="true"` + a unique `data-field`.
+8. **Renders PDF** — Playwright Chromium headless converts `cv.html` → `cv.pdf` via `page.pdf(format="Letter", print_background=True)`.
+9. **Optional review** — `python run.py review <job_slug>` serves `cv.html` locally; edits hit `/save` and regenerate `cv.pdf` live.
 
 The result for each saved job is a folder (nested by date):
 
@@ -55,15 +50,37 @@ The pipeline is **incremental**: re-running only processes newly-saved jobs. Alr
 ## Architecture
 
 ```
-extract  →  profile  →  tailor  →  evaluate  →  repair  →  render_html  →  [review opcional]  →  render_pdf
-(Playwright MCP)  (bs4)         (OpenCode Go / GLM 5.2 or any OpenAI-compatible endpoint)  (Jinja2)        (Playwright Chromium)
+extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  render_html  →  [review opcional]  →  render_pdf
+(Playwright MCP)  (LLM, once/offer)  (LLM)                (optional)         (Jinja2)        (Playwright Chromium)
 ```
 
-Three LLM passes — *tailor* (rewrite), *evaluate* (review), and *repair* (fix) — use the same configurable model. See [`docs/PROMPT_DESIGN.md`](docs/PROMPT_DESIGN.md) for the anti-suspicion prompt strategy and the URL-protection design.
+Up to four LLM passes per offer — *summarize_job* (once, cached), *tailor*
+(rewrite), *evaluate* (review), and *repair* (fix) — use the configurable
+models. The system prompts are plain-text files under `prompts/` that you can
+read and edit without touching Python (see below).
 
 ### Hyperlink / URL protection
 
-Every `<a href>` in the base CV is extracted into a structured `{texto, url}` object. The tailor / evaluator / repair prompts **omit URLs entirely** — they only see visible text. After the tailor returns, the original `enlaces` arrays are re-injected byte-identical, so the user's project links survive the rewrite untouched (and a buggy LLM cannot tamper with them).
+Every link in the base CV is extracted into a structured `{label, url}` object.
+The prompt builders omit URLs entirely — the LLM only sees visible text. After
+the tailor returns, the original `links` arrays are re-injected byte-identical,
+so the user's project links survive the rewrite untouched (and a buggy LLM
+cannot tamper with them).
+
+### Editable system prompts (`prompts/`)
+
+`prompts/tailor_system.txt`, `prompts/evaluator_system.txt`,
+`prompts/repair_system.txt`, and `prompts/job_summarizer_system.txt` are plain
+text. To customize one, create `prompts/<name>.override.txt` (gitignored): it
+wins over the default and survives `git pull` without merge conflicts.
+
+### Personal preferences (`input/preferences.txt`, optional)
+
+Write your own rules (e.g. *"the summary must start with 'En búsqueda de un
+puesto en...'"*) in `input/preferences.txt` (plain text; `#` lines ignored; see
+`input/preferences.example.txt`). They're injected into all three LLM passes as
+"INSTRUCCIONES PERSONALES DEL CANDIDATO", always subordinate to the critical
+rules (no invented data, no verbatim copying).
 
 ---
 
@@ -75,41 +92,53 @@ auto-tailored-cv/
 ├── .gitignore
 ├── .env.example                # template for your secrets (committed)
 ├── .env                         # your actual secrets (NEVER committed)
+├── schema/
+│   ├── base_cv.schema.json      # JSON Schema contract for input/base_cv.yaml
+│   └── example.yaml             # complete example CV (reference for conversion)
+├── prompts/                     # editable system prompts (.txt)
+├── PROMPT_PARA_TU_CV.md        # copy-paste prompt to convert your CV in any AI chat
 ├── .claude/skills/cv_automatizacion.md    # natural-language skill
 ├── .opencode/command/cv_automatizacion.md # opencode command equivalent
-├── README.md                   # this file (English)
-├── README.es.md                # Spanish version
+├── README.md                   # Spanish docs
+├── README.en.md                # this file (English)
 ├── LICENSE                     # MIT
 ├── pyproject.toml
 ├── requirements.txt
 ├── requirements-dev.txt        # + pytest, ruff, python-docx (legacy --legacy-docx)
 ├── scripts/
-│   ├── build_base_cv.py
+│   ├── build_base_cv.py         # generates a placeholder input/base_cv.yaml
+│   ├── validate_base_cv.py      # standalone YAML validator (schema)
 │   ├── install_libreoffice.sh
 │   └── install_skill.sh         # install the cv_automatizacion skill globally
 ├── run.py                       # CLI entrypoint
 ├── input/
-│   └── base_cv.html             # your base CV (text + hyperlinks, gitignored)
+│   ├── base_cv.yaml             # your base CV (YAML, gitignored)
+│   ├── preferences.example.txt  # template for personal preferences (committed)
+│   └── preferences.txt          # your personal preferences (gitignored)
 ├── jobs/                        # extracted job JSONs (gitignored, cache)
 ├── output/                      # generated CVs (gitignored)
 ├── templates/
-│   ├── cv_template.html         # Jinja2 template for the tailored CV
-│   └── cv_style.css              # shared styles (header, sections, skills-table, @media print)
+│   ├── cv_template.html         # generic Jinja2 template (entry_block/simple_list/text_block)
+│   └── cv_style.css             # shared styles (Harvard, @media print)
 ├── src/
 │   ├── config.py                # Settings (LLM_*, scraper, paths, review server)
 │   ├── extract/
 │   │   ├── linkedin_scraper.py  # Playwright MCP (default) / Browser MCP (legacy)
 │   │   └── mcp_stdio.py         # generic JSON-RPC 2.0 stdio client
 │   ├── profile/
-│   │   └── cv_reader.py         # HTML parser (BeautifulSoup4) → CVProfile
+│   │   ├── cv_reader.py         # YAML parser + CVProfile / CVSection / CVEntry
+│   │   ├── schema_validation.py # jsonschema validation (readable errors)
+│   │   └── preferences.py       # load_user_preferences()
 │   ├── tailor/
-│   │   ├── llm_client.py        # OpenAI SDK wrapper (any OpenAI-compatible endpoint)
-│   │   ├── prompts.py           # tailor / evaluator / repair prompt builders
-│   │   ├── cv_rewriter.py       # tailor pass + link re-injection
+│   │   ├── llm_client.py        # OpenAI SDK wrapper + token-usage logging
+│   │   ├── prompt_loader.py     # load_prompt() with .override.txt support
+│   │   ├── prompts.py           # prompt builders (system from prompts/, user dynamic)
+│   │   ├── job_summarizer.py    # summarize_job() (cached once per offer)
+│   │   ├── cv_rewriter.py       # tailor pass + link re-injection + shape validation
 │   │   ├── evaluator.py
 │   │   └── repair.py
 │   ├── render/
-│   │   ├── html_renderer.py     # Jinja2 → cv.html
+│   │   ├── html_renderer.py     # Jinja2 → cv.html (generic types)
 │   │   ├── pdf_renderer.py      # Playwright → cv.pdf
 │   │   └── legacy/              # behind --legacy-docx only
 │   │       ├── docx_writer.py
@@ -121,6 +150,10 @@ auto-tailored-cv/
 │       └── logging.py
 └── tests/
     ├── test_cv_reader.py
+    ├── test_schema_validation.py
+    ├── test_preferences.py
+    ├── test_prompt_loader.py
+    ├── test_job_summarizer.py
     ├── test_html_renderer.py
     ├── test_pdf_renderer.py
     ├── test_tailor_pipeline.py
@@ -142,7 +175,7 @@ auto-tailored-cv/
 
 - macOS (tested on macOS 14+; Linux should work with minor adjustments)
 - Python 3.9+
-- An LLM provider with an OpenAI-compatible endpoint (default: OpenCode Go subscription at `https://opencode.ai/zen/go/v1` with DeepSeek V4 Flash as the model; get an API key at <https://opencode.ai/auth>). Any alternative — GLM 5.2 on the same OpenCode Go tier, OpenRouter, DeepSeek direct, … — works by setting `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_TAILOR`, `LLM_MODEL_EVALUATOR` in `.env`.
+- An LLM provider with an OpenAI-compatible endpoint (default: OpenCode Go subscription at `https://opencode.ai/zen/go/v1` with DeepSeek V4 Flash as the model; get an API key at <https://opencode.ai/auth>). Any alternative — OpenRouter, DeepSeek direct, … — works by setting `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_TAILOR`, `LLM_MODEL_EVALUATOR` in `.env`.
 - Playwright Chromium — installed automatically by:
   ```bash
   python3 -m playwright install chromium
@@ -165,9 +198,19 @@ python3 -m playwright install chromium
 cp .env.example .env
 # open .env and paste your LLM provider API key (LLM_API_KEY)
 
-# put your base CV here (plain HTML; see input/base_cv.html as a sample)
-cp /path/to/your/base_cv.html input/base_cv.html
+# Generate your base CV in YAML. Two paths:
+#   (a) ask your coding agent: "generá mi CV base a partir de este PDF" — it
+#       reads schema/ + example and writes input/base_cv.yaml for you.
+#   (b) or paste PROMPT_PARA_TU_CV.md into any AI chat with your CV and save
+#       the returned YAML at input/base_cv.yaml.
+# Then validate:
+python scripts/validate_base_cv.py input/base_cv.yaml
 ```
+
+> ⚠️ The **visual layout** of your original CV (columns, icons, photo, colors)
+> is **not** preserved — only the content. The final PDF always uses the repo's
+> single Harvard template. This is intentional: it guarantees a consistent look
+> across users.
 
 To use the `--scraper browsermcp` fallback instead of Playwright MCP, install the [Browser MCP Chrome extension](https://docs.browsermcp.io) (kept only for transition).
 
@@ -274,7 +317,9 @@ flags. The output and behavior is identical to running the CLI by hand.
 | `LINKEDIN_SAVED_JOBS_URL` | `https://www.linkedin.com/my-items/saved-jobs/` | Saved jobs page URL |
 | `BROWSER_TIMEOUT_MS` | `15000` | Per-action timeout (ms) |
 | `BROWSER_NAV_DELAY_S` | `3` | Fallback nav sleep (lapsus before snapshot). With Playwright MCP's auto-wait this is largely redundant |
-| `BASE_CV_PATH` | `input/base_cv.html` | Path to your base CV |
+| `BASE_CV_PATH` | `input/base_cv.yaml` | Path to your base CV (YAML) |
+| `PREFERENCES_PATH` | `input/preferences.txt` | Optional personal preferences for the LLM |
+| `ENABLE_EVALUATION` | `true` | When `false`, skips the evaluator + repair passes (cheaper, but nothing catches hallucinations / verbatim copying) |
 | `JOBS_DIR` | `jobs` | Cache directory for extracted jobs |
 | `OUTPUT_DIR` | `output` | Where tailored CVs are written |
 | `TEMPLATES_DIR` | `templates` | Jinja templates + shared CSS |
@@ -283,15 +328,16 @@ flags. The output and behavior is identical to running the CLI by hand.
 | `REVIEW_PORT` | `8420` | port for `run.py review` |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
-Copy `.env.example` to `.env` and fill in your values. The defaults keep pointing at OpenCode Go + GLM 5.2; to switch providers, change only `LLM_BASE_URL` and `LLM_API_KEY`.
+Copy `.env.example` to `.env` and fill in your values. The defaults keep pointing at OpenCode Go + DeepSeek V4 Flash; to switch providers, change only `LLM_BASE_URL` and `LLM_API_KEY`.
 
 ---
 
 ## Safety / privacy
 
-- Your `.env`, `input/base_cv.html`, `.playwright-profile/` are gitignored — CV and cookies never leave your machine via git.
+- Your `.env`, `input/base_cv.yaml`, `input/preferences.txt`, and `.playwright-profile/` are gitignored — CV and cookies never leave your machine via git.
 - LinkedIn scraping uses your real Chromium session via Playwright MCP — no password is stored in this project.
 - URLs in the base CV are protected end-to-end: they never appear in LLM prompts and are re-injected byte-identical after the tailor pass.
+- Job-posting text from LinkedIn is treated as **untrusted data**: the only pass that processes it raw (the job summarizer) explicitly declares it is never an instruction to follow (prompt-injection mitigation).
 - All LLM prompts go to your configured provider endpoint with whatever data-retention policy that provider has (OpenCode Go by default has zero data retention).
 
 ---

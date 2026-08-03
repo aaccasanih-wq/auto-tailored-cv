@@ -1,0 +1,127 @@
+# ============================================================================
+# Ejemplo de base_cv.yaml — María Fernanda Rojas Castillo (CV ficticio)
+#
+# Este archivo es la REFERENCIA para generar tu propio `input/base_cv.yaml`.
+# Cubre los 3 tipos de sección del schema:
+#   - entry_block  : estructura "qué / dónde / cuándo / bullets" (Experiencia,
+#                    Educación, Proyectos, Certificaciones, Publicaciones, ...)
+#   - simple_list  : lista de items sueltos (Habilidades, Idiomas, Premios, ...)
+#   - text_block   : un único bloque de texto (Resumen / Perfil / Objetivo)
+#
+# `reorderable: true` le da al LLM licencia de reordenar y OMITIR entradas por
+# relevancia para cada oferta. Por defecto es `false` (tratamiento estricto 1:1).
+#
+# El orden de `sections` ES el orden de renderizado del PDF.
+# Cada `bullet`/`item` puede llevar `tags` (keywords que demuestra) — opcional,
+# habilita el filtrado local pre-LLM.
+# ============================================================================
+
+personal_info:
+  name: "María Fernanda Rojas Castillo"
+  email: "maria.rojas@email.com"
+  phone: "+51 900 000 000"
+  location: "Lima, Perú"
+  links:
+    - { label: "Portafolio", url: "https://maria-rojas-portafolio.example.com" }
+    - { label: "LinkedIn", url: "https://www.linkedin.com/in/maria-rojas" }
+
+summary: "Perfil profesional orientada a productos digitales, automatización de procesos y análisis de datos, con experiencia práctica en proyectos de impacto medible."
+
+sections:
+
+  # --- text_block: el resumen / perfil --------------------------------
+  - id: resumen
+    title: "Perfil Profesional"
+    type: text_block
+    text: "Ingeniera de Sistemas con 3 años de experiencia en transformación digital y automatización de procesos. Combina análisis de datos con diseño de flujos de trabajo para reducir tiempos operativos en más de 40%. Interés en roles de producto, data analytics y automatización."
+
+  # --- entry_block estricto (reorderable: false) -----------------------
+  - id: experiencia
+    title: "Experiencia Laboral"
+    type: entry_block
+    reorderable: false
+    entries:
+      - heading: "Analista de Automatización — TechFlow Perú"
+        subheading: "Área de Procesos & Transformación Digital"
+        location: "Lima, Perú"
+        dates: "Mar 2023 – Actualidad"
+        links: []
+        bullets:
+          - text: "Automaticé el registro contable de facturas en SAP, reduciendo el tiempo de carga de 6 horas a 40 minutos semanales."
+            tags: ["automatizacion", "sap", "procesos"]
+          - text: "Diseñé dashboards en Power BI para el seguimiento de KPIs operativos usados por la gerencia."
+            tags: ["powerbi", "dashboards", "kpis"]
+          - text: "Documenté y estandarizó flujos de trabajo en Notion, habilitando la transferencia de conocimiento entre equipos."
+            tags: ["documentacion", "procesos"]
+      - heading: "Practicante de Inteligencia de Negocios — DataCorp"
+        location: "Lima, Perú"
+        dates: "Ene 2022 – Feb 2023"
+        links: []
+        bullets:
+          - text: "Elaboré reportes de ventas con Excel y SQL, consolidando fuentes de datos dispersas."
+            tags: ["excel", "sql", "reportes"]
+          - text: "Apoyé la migración de un proceso manual de conciliación a una planilla automatizada."
+            tags: ["automatizacion", "excel"]
+
+  # --- entry_block flexible (reorderable: true) ------------------------
+  - id: proyectos
+    title: "Proyectos"
+    type: entry_block
+    reorderable: true
+    entries:
+      - heading: "BOT de Conciliación Bancaria con IA"
+        dates: "2025"
+        links:
+          - { label: "Dashboard", url: "https://dashboard-bot.example.com" }
+          - { label: "Código", url: "https://github.com/maria-rojas/bot-conciliacion" }
+        bullets:
+          - text: "Automatiza la conciliación de estados de cuenta bancarios mediante una IA que clasifica transacciones."
+            tags: ["ia", "automatizacion", "finanzas"]
+          - text: "Integra Telegram, Gmail y Google Sheets; despliega un dashboard de seguimiento en Streamlit."
+            tags: ["api", "streamlit", "telegram"]
+      - heading: "KAYLA — Recordatorios de salud"
+        dates: "2025"
+        links:
+          - { label: "Landing Page", url: "https://kayla.example.com" }
+        bullets:
+          - text: "Sistema que recuerda citas y recojo de medicamentos a pacientes de postas de salud."
+            tags: ["salud", "automatizacion"]
+          - text: "Flujo basado en Google Forms + Sheets con envío automático vía bot de Telegram."
+            tags: ["gapps", "telegram"]
+
+  # --- entry_block estricto (reorderable: false) -----------------------
+  - id: educacion
+    title: "Educación"
+    type: entry_block
+    reorderable: false
+    entries:
+      - heading: "Universidad Nacional de Ingeniería"
+        location: "Lima, Perú"
+        dates: "2018 – 2023"
+        subheading: "Ingeniería de Sistemas | Egresada"
+        links: []
+        bullets: []
+
+  # --- simple_list: habilidades / herramientas --------------------------
+  - id: habilidades
+    title: "Habilidades & Herramientas"
+    type: simple_list
+    items:
+      - text: "Python (Pandas, NumPy, Streamlit, Selenium, APIs)"
+        tags: ["python", "data"]
+      - text: "SQL y Excel avanzado (Power Query, tablas dinámicas)"
+        tags: ["sql", "excel"]
+      - text: "Power BI y visualización de datos"
+        tags: ["powerbi", "dashboards"]
+      - text: "Automatización de procesos (SAP, GApps, APIs)"
+        tags: ["automatizacion", "sap"]
+      - text: "Gestión de proyectos ágil (Scrum, Jira)"
+        tags: ["agil", "scrum"]
+
+  # --- simple_list: idiomas ---------------------------------------------
+  - id: idiomas
+    title: "Idiomas"
+    type: simple_list
+    items:
+      - text: "Español (nativo)"
+      - text: "Inglés (Avanzado — C1)"

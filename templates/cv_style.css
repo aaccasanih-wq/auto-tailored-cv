@@ -119,6 +119,51 @@ ul.bullets li {
   text-align: justify;
 }
 
+/* ---------- Tipos de sección genéricos (schema YAML) ---------- */
+
+.text-block {
+  margin: 2pt 0 0 0;
+  text-align: justify;
+}
+
+ul.simple-list {
+  margin: 2pt 0 0 0;
+  padding-left: 16pt;
+}
+
+ul.simple-list li {
+  margin-bottom: 2pt;
+  text-align: justify;
+}
+
+.entry-location {
+  font-style: normal;
+  margin: 1pt 0 2pt 0;
+}
+
+.entry-links {
+  font-style: normal;
+  margin: 1pt 0 2pt 0;
+}
+
+.entry-links a {
+  color: #000000;
+  text-decoration: underline;
+}
+
+.entry-links .sep {
+  text-decoration: none;
+  margin: 0 3pt;
+}
+
+.unsupported-type {
+  border: 1px dashed #b91c1c;
+  color: #b91c1c;
+  background: #fef2f2;
+  padding: 4pt 6pt;
+  font-size: 10pt;
+}
+
 /* ---------- Proyectos ---------- */
 
 .project-block {

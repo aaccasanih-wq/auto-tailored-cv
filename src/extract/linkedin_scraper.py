@@ -58,33 +58,58 @@ _CURRENT_JOB_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Some LinkedIn-generated URLs (e.g. "share" links) use `jobPostingId=NNNN`.
+_JOB_POSTING_ID_RE = re.compile(
+    r"jobPostingId=(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _job_id_from_url(url: str) -> str:
+    """Extract the numeric LinkedIn job id from any known URL variant.
+
+    Returns the id (as a string) or ``""`` if none can be found.
+    """
+    if not url:
+        return ""
+    m = JOB_URL_RE.search(url)
+    if m:
+        return m.group(1) or m.group(2) or ""
+    m = _CURRENT_JOB_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    m = _JOB_POSTING_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    return ""
+
 
 def _normalize_job_url(url: str) -> str:
-    """Normalize any LinkedIn jobs URL containing ``currentJobId=NNNN`` into
-    the canonical ``https://www.linkedin.com/jobs/view/<id>/`` form.
+    """Normalize any LinkedIn jobs URL that carries a job id into the canonical
+    ``https://www.linkedin.com/jobs/view/<id>/`` form.
 
     LinkedIn emits several URL patterns that all point to the same job:
       - ``/jobs/view/<title-slug>-<id>/``         (canonical, already OK)
       - ``/jobs/view/?currentJobId=<id>&...``      (canonical, already OK)
       - ``/jobs/search-results/?currentJobId=<id>&...``  (search page — NO)
       - ``/jobs/c/rewards/?currentJobId=<id>&...``       (saved-jobs sidebar — NO)
+      - ``.../jobs/view/?jobPostingId=<id>&...``         (share links — NO)
 
-    The last two are NOT matched by ``JOB_URL_RE`` and would cause the scraper
+    The last three are NOT matched by ``JOB_URL_RE`` and would cause the scraper
     to treat the URL as a saved-jobs *listing* (taking a giant snapshot of the
     search results page, which crashes Playwright MCP with a "chunk too long"
     error). This function extracts the job ID from any of them and returns the
     canonical single-job URL so the scraper enters single-job mode.
 
-    If the URL already matches the canonical form or does not contain a
-    ``currentJobId`` parameter, it is returned unchanged.
+    If the URL already matches the canonical form or does not contain a job id
+    in any known parameter, it is returned unchanged.
     """
     if not url:
         return url
     if JOB_URL_RE.search(url):
         return url  # Already canonical — /view/<id>/ or /view/?currentJobId=<id>
-    m = _CURRENT_JOB_ID_RE.search(url)
-    if m:
-        job_id = m.group(1)
+    job_id = _job_id_from_url(url)
+    if job_id:
         return f"https://www.linkedin.com/jobs/view/{job_id}/"
     return url
 
@@ -625,7 +650,7 @@ async def _scrape_single_job(
                 )
                 return []
             log.warning("Login required — log in in the open window.")
-            for attempt in range(30):
+            for _attempt in range(30):
                 await asyncio.sleep(20)
                 try:
                     snap = extract_text_content(
@@ -905,4 +930,6 @@ __all__ = [
     "_extract_job_urls",
     "_parse_job_detail",
     "_scrape_single_job",
+    "_job_id_from_url",
+    "_normalize_job_url",
 ]

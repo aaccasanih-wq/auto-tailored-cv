@@ -3,38 +3,42 @@
 The contract for the tailored JSON output (the ANALYSIS.JSON schema) is:
 
   {
-    "summary": "<one line>",
+    "summary": "<one line/paragraph, rewritable>",
     "sections": [
       {
-        "title": "<SECTION TITLE>",
-        "kind": "educacion" | "experiencia" | "proyectos" | "habilidades",
-        "entries": [
+        "id": "<immutable>",
+        "title": "<immutable>",
+        "type": "entry_block" | "simple_list" | "text_block",
+        "reorderable": true|false,
+        "entries": [                          # entry_block only
           {
-            "titulo": "<immutable>",
-            "fecha": "<immutable>",
-            "subtitulo": "<immutable>",
-            "descriptor": "<editable for proyectos; immutable elsewhere>",
-            "enlaces": [{"texto": "...", "url": "..."}],   # protected
-            "bullets": ["..."]                              # rewritable
+            "heading": "<immutable>", "subheading": "<immutable>",
+            "location": "<immutable>", "dates": "<immutable>",
+            "links": [{"label": "...", "url": "..."}],   # protected
+            "bullets": [{"text": "...", "tags": [...]}]  # rewritable
           }
         ],
-        "table": [["label", "value"], ...]                 # habilidades only
+        "items": [{"text": "...", "tags": [...]}],   # simple_list only
+        "text": "..."                                # text_block only
       }
     ]
   }
 
-The LLM is NEVER shown `enlaces` / URLs — see prompts._strip_enlaces_for_llm.
-After the LLM returns, `_reinject_enlaces` copies the protected URLs back from
-the base CV into the tailored JSON, byte-identical.
+The LLM is NEVER shown `links` / URLs — see prompts._strip_links_for_llm.
+After the LLM returns, `_reinject_links` copies the protected URLs back from
+the base CV into the tailored JSON, byte-identical, matching entries by
+`heading` (so reordering/removal in `reorderable: true` sections still maps
+correctly).
 
-`_validate_shape` checks section titles/order/kind, entry counts per section,
-bullet counts per entry, and skills-table shape. The URLs are verified to be
-untouched (by virtue of being re-injected from base, never trusted from LLM).
+`_validate_shape` checks section titles/order/type, entry counts per section
+(driven by `section.reorderable`), immutable-field drift, and deterministically
+drops empty bullets / empty-headed entries WITHOUT any LLM call.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,18 +65,20 @@ def tailor_cv(
     job: JobInfo,
     model: str | None = None,
     temperature: float = 0.3,
+    user_preferences: str = "",
 ) -> TailorResult:
     model = model or settings.llm_model_tailor
-    system, user = build_tailor_prompt(base_cv, job)
+    system, user = build_tailor_prompt(base_cv, job, user_preferences)
     log.info("tailor: model=%s job=%s/%s", model, job.company, job.title)
     response = client.chat(
-        model=model, system=system, user=user, json_mode=True, temperature=temperature
+        model=model, system=system, user=user, json_mode=True, temperature=temperature,
+        tag="tailor",
     )
     tailored = _parse_json_loose(response.content)
     warnings = _validate_shape(tailored, base_cv)
     if warnings:
         log.warning("tailor produced %d shape warning(s): %s", len(warnings), warnings[:3])
-    _reinject_enlaces(tailored, base_cv)
+    _reinject_links(tailored, base_cv)
     return TailorResult(tailored_json=tailored, raw_response=response, shape_warnings=warnings)
 
 
@@ -94,44 +100,118 @@ def _parse_json_loose(content: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _reinject_enlaces(tailored: dict[str, Any], base_cv: CVProfile) -> None:
-    """After the LLM returns its JSON (NOT containing `enlaces`), copy the
+def _reinject_links(tailored: dict[str, Any], base_cv: CVProfile) -> None:
+    """After the LLM returns its JSON (NOT containing `links`), copy the
     protected link arrays back from the base CV — byte-identical.
 
-    Matching is by `titulo` (project/experience title) so that reordering or
-    removal of entries (allowed for proyectos) still correctly maps each
-    tailored entry to its base counterpart's links.
+    Matching is by `heading` so that reordering or removal of entries (allowed
+    for `reorderable: true` sections) still maps each tailored entry to its
+    base counterpart's links.
 
-    This guarantees URLs never reach the LLM and never leave the pipeline
-    modified. Idempotent: if the tailored JSON already has enlaces arrays
+    Idempotent: if the tailored JSON already has `links`/`enlaces` arrays
     (e.g. because the LLM echoed something), they are OVERWRITTEN with the
-    base values — so a malicious / buggy LLM cannot tamper with URLs.
+    base values — a malicious / buggy LLM cannot tamper with URLs.
     """
     tailored_sections = tailored.get("sections", []) or []
-    base_sections = base_cv.sections
-    for i, base_s in enumerate(base_sections):
+    for i, base_s in enumerate(base_cv.sections):
         if i >= len(tailored_sections):
             break
         tailored_s = tailored_sections[i] or {}
-        if base_s.kind == "habilidades":
-            # skills-table sections have no enlaces.
+        if base_s.type in ("simple_list", "text_block"):
+            # These section types carry no links.
+            tailored_s.pop("links", None)
             tailored_s.pop("enlaces", None)
             continue
-        # Build a titulo → enlaces map from the base section entries.
-        base_by_titulo: dict[str, list[dict[str, str]]] = {}
+        # Build a heading → links map from the base section entries.
+        base_by_heading: dict[str, list[dict[str, str]]] = {}
         for base_entry in base_s.entries:
-            key = (base_entry.titulo or "").strip()
-            base_by_titulo[key] = [e.to_dict() for e in base_entry.enlaces]
+            key = (base_entry.heading or "").strip()
+            base_by_heading[key] = [link.to_dict() for link in base_entry.links]
         tailored_entries = tailored_s.get("entries", []) or []
         for t_entry in tailored_entries:
             if not isinstance(t_entry, dict):
                 continue
-            t_titulo = (t_entry.get("titulo") or "").strip()
-            enlaces = base_by_titulo.get(t_titulo, [])
-            if enlaces:
-                t_entry["enlaces"] = enlaces
+            t_heading = (t_entry.get("heading") or "").strip()
+            links = base_by_heading.get(t_heading, [])
+            if links:
+                t_entry["links"] = links
             else:
-                t_entry.pop("enlaces", None)
+                t_entry.pop("links", None)
+            t_entry.pop("enlaces", None)
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic empty-content cleanup (no LLM involved)                       #
+# --------------------------------------------------------------------------- #
+
+_EMPTY_SEPARATOR_RE = re.compile(r"^[\s\-•·–—_—]+$")
+
+
+def _bullet_has_text(bullet: Any) -> bool:
+    """True if a bullet carries real text (not just a lone separator)."""
+    if isinstance(bullet, str):
+        text = bullet.strip()
+    elif isinstance(bullet, dict):
+        text = (bullet.get("text") or "").strip()
+    else:
+        return False
+    if not text:
+        return False
+    if _EMPTY_SEPARATOR_RE.fullmatch(text):
+        return False
+    return True
+
+
+def _clean_empty_content(tailored: dict[str, Any]) -> list[str]:
+    """Deterministically drop empty bullets and empty-headed entries from the
+    tailored JSON (mutates it) and return warnings for what was dropped. This
+    covers the "bullet with a dash and no text" risk in the final PDF without
+    relying on the (LLM) evaluator to catch it.
+
+    - `entry_block`: entries with an empty `heading` are dropped; bullets with
+      empty / separator-only `text` are dropped.
+    - `simple_list`: items with empty `text` are dropped.
+    - `text_block`: untouched.
+    """
+    warnings: list[str] = []
+    for s in tailored.get("sections", []) or []:
+        if not isinstance(s, dict):
+            continue
+        title = s.get("title") or ""
+        s_type = s.get("type") or ""
+        if s_type == "simple_list":
+            kept_items = []
+            for ii, item in enumerate(s.get("items", []) or []):
+                text = (item.get("text") or "").strip() if isinstance(item, dict) else ""
+                if not text:
+                    warnings.append(f"section '{title}' item {ii}: texto vacío — descartado")
+                    continue
+                kept_items.append(item)
+            s["items"] = kept_items
+        elif s_type == "entry_block":
+            kept_entries: list[Any] = []
+            for ei, entry in enumerate(s.get("entries", []) or []):
+                if not isinstance(entry, dict):
+                    kept_entries.append(entry)
+                    continue
+                if not (entry.get("heading") or "").strip():
+                    warnings.append(
+                        f"section '{title}' entry {ei}: heading vacío — entrada descartada"
+                    )
+                    continue
+                kept_bullets = []
+                for bi, bullet in enumerate(entry.get("bullets", []) or []):
+                    if not _bullet_has_text(bullet):
+                        warnings.append(
+                            f"section '{title}' entry {ei} bullet {bi}: texto vacío "
+                            f"(solo separador) — descartado"
+                        )
+                        continue
+                    kept_bullets.append(bullet)
+                entry["bullets"] = kept_bullets
+                kept_entries.append(entry)
+            s["entries"] = kept_entries
+    return warnings
 
 
 # --------------------------------------------------------------------------- #
@@ -142,9 +222,16 @@ def _reinject_enlaces(tailored: dict[str, Any], base_cv: CVProfile) -> None:
 def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
     """Return a list of human-readable shape warnings. Empty list = OK.
 
-    For "proyectos" sections, fewer entries (removals) and reordering are
-    ALLOWED — only "added a non-existent project" is flagged. For
-    "experiencia" / "educacion" sections, the entry list must match 1:1.
+    Generic by section `type` and driven by `section.reorderable`:
+      - `entry_block` reorderable: entries may be removed/reordered (not
+        invented); bullets editable.
+      - `entry_block` non-reorderable: strict 1:1 entries/order/bullets;
+        immutable fields must not drift.
+      - `simple_list` / `text_block`: flexible (no shape constraints).
+
+    Also performs the deterministic empty-content cleanup (see
+    `_clean_empty_content`) BEFORE the structural checks so the final JSON is
+    always PDF-safe without an LLM.
     """
     warnings: list[str] = []
     if not isinstance(tailored, dict):
@@ -156,20 +243,8 @@ def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
     if "summary" not in tailored or not isinstance(tailored["summary"], str):
         warnings.append("tailored output missing 'summary' string")
 
-    # Summary template rule (only when the base CV uses the 'En búsqueda...' template)
-    base_summary = (base_cv.summary or "").strip()
-    if base_summary.startswith("En búsqueda de un puesto en"):
-        tailored_summary = (tailored.get("summary") or "").strip()
-        if not tailored_summary.startswith("En búsqueda de un puesto en"):
-            warnings.append(
-                "summary must start with 'En búsqueda de un puesto en '"
-                f" (got: {tailored_summary[:80]!r})"
-            )
-        elif tailored_summary.count(" · ") < 2:
-            warnings.append(
-                "summary must have at least two ' · ' separators"
-                f" (got: {tailored_summary!r})"
-            )
+    # Deterministic cleanup (marks + discards empty bullets/entries).
+    warnings.extend(_clean_empty_content(tailored))
 
     expected_titles = [s.title for s in base_cv.sections]
     got_titles = [s.get("title", "") for s in tailored["sections"]]
@@ -182,70 +257,49 @@ def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
         if i >= len(tailored["sections"]):
             break
         tailored_s = tailored["sections"][i] or {}
-        if tailored_s.get("kind") != base_s.kind:
+        t_type = tailored_s.get("type") or base_s.type
+        if tailored_s.get("type") != base_s.type:
             warnings.append(
-                f"section '{base_s.title}' kind mismatch: base={base_s.kind!r} "
-                f"tailored={tailored_s.get('kind')!r}"
+                f"section '{base_s.title}' type mismatch: base={base_s.type!r} "
+                f"tailored={tailored_s.get('type')!r}"
             )
-        if base_s.kind == "habilidades":
-            bt = base_s.table
-            tt = tailored_s.get("table", []) or []
-            if len(tt) != len(bt):
-                warnings.append(
-                    f"section '{base_s.title}' table row count differs: "
-                    f"base={len(bt)} tailored={len(tt)}"
-                )
-                continue
-            for ri, (brow, trow) in enumerate(zip(bt, tt)):
-                if not isinstance(trow, list) or len(trow) != len(brow):
-                    warnings.append(
-                        f"section '{base_s.title}' table row {ri} col count differs"
-                    )
-        elif base_s.kind == "proyectos":
-            # Flexible: entries may be removed or reordered, but NOT invented.
-            base_titulos = {(e.titulo or "").strip() for e in base_s.entries}
-            te = tailored_s.get("entries", []) or []
-            for ei, t_entry in enumerate(te):
+        if t_type in ("simple_list", "text_block"):
+            # Flexible: freely reorderable / reformulable.
+            continue
+        # --- entry_block ---
+        entries = tailored_s.get("entries", []) or []
+        if base_s.reorderable:
+            # Flexible entry list: removals + reordering allowed; invention flagged.
+            base_headings = {(e.heading or "").strip() for e in base_s.entries}
+            for ei, t_entry in enumerate(entries):
                 if not isinstance(t_entry, dict):
                     continue
-                t_titulo = (t_entry.get("titulo") or "").strip()
-                if t_titulo and t_titulo not in base_titulos:
+                t_heading = (t_entry.get("heading") or "").strip()
+                if t_heading and t_heading not in base_headings:
                     warnings.append(
-                        f"section '{base_s.title}' entry {ei}: titulo '{t_titulo}' "
-                        f"not found in base CV (invented project)"
+                        f"section '{base_s.title}' entry {ei}: heading '{t_heading}' "
+                        f"not found in base CV (invented entry)"
                     )
-                # Check empty-parens descriptor
-                t_desc = (t_entry.get("descriptor") or "").strip()
-                if t_desc in ("()", ):
-                    warnings.append(
-                        f"section '{base_s.title}' entry {ei}: descriptor is empty "
-                        f"parentheses '()' — should be empty string instead"
-                    )
-                stray_enlaces = t_entry.get("enlaces")
-                if stray_enlaces:
-                    warnings.append(
-                        f"section '{base_s.title}' entry {ei}: tailored LLM output "
-                        f"contained 'enlaces' (must be omitted; URLs are protected)."
-                    )
+                _warn_stray_links(warnings, base_s.title, ei, t_entry)
         else:
-            # experiencia / educacion: strict 1:1 match
+            # Strict 1:1.
             be = base_s.entries
-            te = tailored_s.get("entries", []) or []
-            if len(te) != len(be):
+            if len(entries) != len(be):
                 warnings.append(
                     f"section '{base_s.title}' entry count differs: "
-                    f"base={len(be)} tailored={len(te)}"
+                    f"base={len(be)} tailored={len(entries)}"
                 )
                 continue
-            for ei, (b_entry, t_entry) in enumerate(zip(be, te)):
+            for ei, (b_entry, t_entry) in enumerate(zip(be, entries)):
+                if not isinstance(t_entry, dict):
+                    continue
                 tb = t_entry.get("bullets", []) or []
                 if len(tb) != len(b_entry.bullets):
                     warnings.append(
                         f"section '{base_s.title}' entry {ei} bullet count differs: "
                         f"base={len(b_entry.bullets)} tailored={len(tb)}"
                     )
-                # Immutable field drift (titulo/fecha/subtitulo/descriptor)
-                for immutable in ("titulo", "fecha", "subtitulo", "descriptor"):
+                for immutable in ("heading", "subheading", "location", "dates"):
                     b_val = getattr(b_entry, immutable) or ""
                     t_val = (t_entry.get(immutable) or "") if isinstance(t_entry, dict) else ""
                     if t_val and t_val != b_val:
@@ -253,16 +307,22 @@ def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
                             f"section '{base_s.title}' entry {ei} immutable field "
                             f"'{immutable}' modified: base={b_val!r} tailored={t_val!r}"
                         )
-                # URL tampering heuristic: LLM output must NOT contain enlaces
-                # before _reinject_enlaces runs. _validate_shape is invoked
-                # BEFORE reinjection in tailor_cv, so we flag any stray enlaces.
-                stray_enlaces = t_entry.get("enlaces") if isinstance(t_entry, dict) else None
-                if stray_enlaces:
-                    warnings.append(
-                        f"section '{base_s.title}' entry {ei}: tailored LLM output "
-                        f"contained 'enlaces' (must be omitted; URLs are protected)."
-                    )
+                _warn_stray_links(warnings, base_s.title, ei, t_entry)
     return warnings
+
+
+def _warn_stray_links(
+    warnings: list[str], title: str, ei: int, t_entry: dict[str, Any]
+) -> None:
+    """Flag any `links`/`enlaces` array the LLM emitted (they must be omitted;
+    URLs are protected and re-injected). Called BEFORE `_reinject_links` runs."""
+    for key in ("links", "enlaces"):
+        stray = t_entry.get(key)
+        if stray:
+            warnings.append(
+                f"section '{title}' entry {ei}: tailored LLM output contained "
+                f"'{key}' (must be omitted; URLs are protected)."
+            )
 
 
 def save_tailored_json(result: TailorResult, path: Path) -> None:
@@ -271,4 +331,11 @@ def save_tailored_json(result: TailorResult, path: Path) -> None:
     )
 
 
-__all__ = ["TailorResult", "tailor_cv", "save_tailored_json", "_validate_shape", "_reinject_enlaces"]
+__all__ = [
+    "TailorResult",
+    "tailor_cv",
+    "save_tailored_json",
+    "_validate_shape",
+    "_reinject_links",
+    "_clean_empty_content",
+]

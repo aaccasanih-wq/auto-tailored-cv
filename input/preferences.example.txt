@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# input/preferences.txt — instrucciones personales opcionales al LLM
+#
+# Copiá este archivo a `input/preferences.txt` y descomentá / escribí tus
+# propias preferencias. `input/preferences.txt` está gitignored (dato
+# personal), este `.example` sí está trackeado.
+#
+# Formato: texto plano. Las líneas vacías y las que empiezan con '#' se
+# ignoran. El resto del contenido se inyecta al LLM en los tres pases
+# (tailor / evaluator / repair) como "INSTRUCCIONES PERSONALES DEL
+# CANDIDATO", siempre subordinado a las reglas críticas del system prompt:
+# no inventar datos, no copiar literal de la oferta, no cambiar hechos.
+# ---------------------------------------------------------------------------
+
+# Ejemplos (descomentá y adaptá los que te sirvan):
+
+# El resumen debe empezar con "En búsqueda de un puesto en <cat1> · <cat2> · <cat3>"
+# y cada categoría debe tener 2-4 palabras, siempre en español.
+
+# Prefiero bullets de máximo 15 palabras; si algo no cabe, dividilo en dos.
+
+# No uses la palabra "apasionado/a" ni superlativos vacíos.
+
+# En la sección de Proyectos, poné siempre primero los proyectos con IA.

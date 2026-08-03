@@ -7,7 +7,7 @@ template.
 The LLM client uses the official `openai` SDK pointed at a configurable
 OpenAI-compatible endpoint (LLM_BASE_URL), so any provider that speaks the
 OpenAI API works: OpenCode Go, DeepSeek, OpenRouter, etc. The defaults keep
-pointing at OpenCode Go (https://opencode.ai/zen/go/v1) with GLM 5.2.
+pointing at OpenCode Go (https://opencode.ai/zen/go/v1) with DeepSeek V4 Flash.
 
 Usage:
     from src.config import settings
@@ -50,6 +50,13 @@ def _env_path(name: str, default: str) -> Path:
     return p
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -60,7 +67,7 @@ except ImportError:
 @dataclass(frozen=True)
 class Settings:
     # --- LLM (provider-agnostic OpenAI-compatible endpoint) ---
-    # Defaults: OpenCode Go (https://opencode.ai/zen/go/v1) + GLM 5.2.
+    # Defaults: OpenCode Go (https://opencode.ai/zen/go/v1) + DeepSeek V4 Flash.
     # Any OpenAI-compatible LLM_BASE_URL will work (DeepSeek, OpenRouter, ...).
     llm_api_key: str
     llm_base_url: str
@@ -88,6 +95,15 @@ class Settings:
     jobs_dir: Path
     output_dir: Path
     templates_dir: Path
+    # Optional plain-text file with the user's personal LLM instructions
+    # (comments/blank lines ignored). See src/profile/preferences.py.
+    preferences_path: Path
+
+    # --- Pipeline behavior ---
+    # When False, skip the evaluate + repair LLM passes entirely (tailor →
+    # render). Default True: catches hallucinations / verbatim copying, which
+    # matters when the CV goes to a real employer.
+    enable_evaluation: bool
 
     # --- PDF conversion ---
     # Path to the LibreOffice `soffice` binary. Only used by the legacy
@@ -111,8 +127,8 @@ def _load() -> Settings:
     return Settings(
         llm_api_key=_env("LLM_API_KEY", "") or "",
         llm_base_url=_env("LLM_BASE_URL", "https://opencode.ai/zen/go/v1") or "",
-        llm_model_tailor=_env("LLM_MODEL_TAILOR", "glm-5.2") or "glm-5.2",
-        llm_model_evaluator=_env("LLM_MODEL_EVALUATOR", "glm-5.2") or "glm-5.2",
+        llm_model_tailor=_env("LLM_MODEL_TAILOR", "deepseek-v4-flash") or "deepseek-v4-flash",
+        llm_model_evaluator=_env("LLM_MODEL_EVALUATOR", "deepseek-v4-flash") or "deepseek-v4-flash",
         llm_request_timeout=_env_int("LLM_REQUEST_TIMEOUT", 120),
         linkedin_saved_jobs_url=_env(
             "LINKEDIN_SAVED_JOBS_URL", "https://www.linkedin.com/my-items/saved-jobs/"
@@ -131,10 +147,12 @@ def _load() -> Settings:
             "PLAYWRIGHT_USER_DATA_DIR", ".playwright-profile"
         ) or ".playwright-profile",
         browser_nav_delay_s=_env_int("BROWSER_NAV_DELAY_S", 3),
-        base_cv_path=_env_path("BASE_CV_PATH", "input/base_cv.html"),
+        base_cv_path=_env_path("BASE_CV_PATH", "input/base_cv.yaml"),
         jobs_dir=_env_path("JOBS_DIR", "jobs"),
         output_dir=_env_path("OUTPUT_DIR", "output"),
         templates_dir=_env_path("TEMPLATES_DIR", "templates"),
+        preferences_path=_env_path("PREFERENCES_PATH", "input/preferences.txt"),
+        enable_evaluation=_env_bool("ENABLE_EVALUATION", True),
         soffice_path=_env("SOFFICE_PATH", "soffice") or "soffice",
         review_host=_env("REVIEW_HOST", "localhost") or "localhost",
         review_port=_env_int("REVIEW_PORT", 8420),

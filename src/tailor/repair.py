@@ -13,7 +13,7 @@ from typing import Any
 
 from src.config import settings
 from src.profile.cv_reader import CVProfile
-from src.tailor.cv_rewriter import _parse_json_loose, _reinject_enlaces, _validate_shape
+from src.tailor.cv_rewriter import _parse_json_loose, _reinject_links, _validate_shape
 from src.tailor.llm_client import LLMClient, LLMResponse
 from src.tailor.prompts import build_repair_prompt
 from src.utils.logging import get_logger
@@ -35,17 +35,19 @@ def repair_cv(
     issues: list[dict[str, Any]],
     model: str | None = None,
     temperature: float = 0.1,
+    user_preferences: str = "",
 ) -> RepairResult:
     """Apply ONLY the fixes flagged by the evaluator. Returns the repaired JSON."""
     model = model or settings.llm_model_evaluator
-    system, user = build_repair_prompt(base_cv, tailored_json, issues)
+    system, user = build_repair_prompt(base_cv, tailored_json, issues, user_preferences)
     log.info("repair: model=%s issues=%d", model, len(issues))
     response = client.chat(
-        model=model, system=system, user=user, json_mode=True, temperature=temperature
+        model=model, system=system, user=user, json_mode=True, temperature=temperature,
+        tag="repair",
     )
     repaired = _parse_json_loose(response.content)
     warnings = _validate_shape(repaired, base_cv)
-    _reinject_enlaces(repaired, base_cv)
+    _reinject_links(repaired, base_cv)
     return RepairResult(
         repaired_json=repaired, raw_response=response, shape_warnings=warnings
     )

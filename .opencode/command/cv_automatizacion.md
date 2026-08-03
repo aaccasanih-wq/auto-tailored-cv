@@ -1,9 +1,44 @@
 ---
 name: cv_automatizacion
-description: Genera, tailoriza, actualiza o revisa CVs en PDF para ofertas laborales de LinkedIn. Activar cuando el usuario diga: CV, curriculum, tailorizar CV, generar CV, revisar CV, auto-tailored-cv, LinkedIn, oferta laboral, run.py all, python run.py. La skill asume que el proyecto auto-tailored-cv es el directorio de trabajo actual (cwd); si no lo es, hacé cd ahí primero.
+description: Genera, tailoriza, actualiza o revisa CVs en PDF para ofertas laborales de LinkedIn, y convierte un CV existente (PDF/Word) al formato base_cv.yaml. Activar cuando el usuario diga: CV, curriculum, tailorizar CV, generar CV, revisar CV, auto-tailored-cv, LinkedIn, oferta laboral, run.py all, python run.py, convertir mi CV, base_cv.yaml. La skill asume que el proyecto auto-tailored-cv es el directorio de trabajo actual (cwd); si no lo es, hacé cd ahí primero.
 ---
 
 # cv_automatizacion — skill para Claude Code / Opencode
+
+## Conversión de tu CV actual (PDF/Word/texto) → `input/base_cv.yaml`
+
+Cuando el usuario pida **"convertime mi CV a base_cv.yaml"**, **"generá mi CV
+base a partir de este PDF"** o similar (sin pedir una oferta aún), ejecutá
+este procedimiento paso a paso:
+
+1. **Leer la referencia**: `schema/base_cv.schema.json` y `schema/example.yaml`.
+2. **Leer el CV que el usuario adjuntó** (PDF/Word/texto) y mapear cada sección
+   real a uno de los 3 tipos genéricos (tabla de equivalencias):
+   - `entry_block` → Experiencia, Educación, Proyectos, Certificaciones,
+     Publicaciones, Voluntariado (estructura "qué / dónde / cuándo / bullets").
+   - `simple_list` → Habilidades, Idiomas, Herramientas, Premios (items sueltos).
+   - `text_block` → Resumen / Perfil / Objetivo (un solo bloque de texto).
+3. **Escribir `input/base_cv.yaml`** respetando el schema exacto.
+4. **Validar automáticamente**:
+   ```bash
+   python scripts/validate_base_cv.py input/base_cv.yaml
+   ```
+5. **Si falla**: corregir el YAML y repetir el paso 4 hasta que valide — sin
+   pedirle al usuario que interprete el error.
+6. Recién entonces avisarle que su CV base está listo y que puede pedir
+   *"generá el CV para la oferta <url>"*.
+
+> ⚠️ El **layout visual** del CV original (columnas, íconos, foto, colores)
+> **no se conserva** — solo el contenido. El PDF final siempre usa el único
+> template Harvard del repo. Es intencional; no lo presente como una pérdida
+> accidental.
+
+Si el usuario no tiene Claude Code/Opencode, la alternativa es `PROMPT_PARA_TU_CV.md`
+(pegarlo en cualquier chat de IA junto a su CV).
+
+---
+
+## Generación / tailorización de CVs para ofertas
 
 Cuando el usuario pida generar, tailorizar, actualizar o revisar sus CVs para
 ofertas laborales de LinkedIn, ejecutá en bash desde la raíz del proyecto
@@ -30,6 +65,12 @@ Interpretá el pedido del usuario para armar los flags:
 - "no llames al LLM, solo revisa qué haría" / "dry run" / "simulacro" →
   `--dry-run`
 - "solo N ofertas" / "los primeros N" → `--limit N`
+
+> **Dedup automático**: el pipeline mantiene un registro por `job_id`
+> (`jobs/_index.json`). Si el usuario pega un link de una oferta que ya tiene
+> CV (aunque sea con otra variante de URL: guardada, recomendada, de búsqueda),
+> el CLI responde *"Ya generaste un CV para esta oferta ... agregá --force"* y
+> NO gasta llamadas LLM. Si el usuario insiste en regenerar, agregá `--force`.
 
 ## ⚠️ Invariante crítico — scope del `--force`
 
@@ -64,21 +105,28 @@ Interpretá el pedido del usuario para armar los flags:
 en `all`, `tailor` y `extract`). `--yes` saltea el prompt `[y/N]` que aparece
 cuando `--force` sin URL tocaría >1 job.
 
-## Pipeline (3 etapas)
+## Pipeline (4 etapas)
 
 1. **extract** — scrapea LinkedIn con Playwright MCP usando el perfil
    persistente (`.playwright-profile/`). El scraper hace clic en el botón
    "...más" / "See more" para capturar la descripción completa. Cuando se
    pasa `--job <url>` con una URL de job, scrapea esa oferta directamente
    (una sola navegación) sin pasar por el listado de saved-jobs.
-2. **tailor** — llama al LLM configurado (DeepSeek V4 Flash por defecto en
-   OpenCode Go). Dos o tres llamadas por job:
+2. **summarize_job** — un pase del LLM convierte la descripción cruda de la
+   oferta en un resumen estructurado (`requisitos_duros` / `skills_deseadas`
+   / `funciones_clave`), cacheado como `job_summary.json` (una sola vez por
+   oferta; se recalcula solo con `--force`). La descripción cruda NO vuelve a
+   viajar a los pases siguientes. Es el único pase que procesa el texto de la
+   oferta, por lo que su system prompt lo trata como datos no confiables.
+3. **tailor** — llama al LLM configurado (DeepSeek V4 Flash por defecto en
+   OpenCode Go). Hasta tres llamadas por job:
    - **tailor** (siempre): reescribe el CV alineándolo a la oferta.
-   - **evaluate** (siempre): revisa alucinación, copia verbatim, formato.
+   - **evaluate** (siempre, salvo `ENABLE_EVALUATION=false`): revisa
+     alucinación, copia verbatim, formato.
    - **repair** (solo si el evaluator halló issues semánticos): corrige
      solo lo marcado. Los issues determinísticos (`url_tampered`, `format`)
      se filtran y NO disparan repair — ya los maneja el código.
-3. **render** — Jinja2 produce `cv.html` y Playwright genera `cv.pdf`.
+4. **render** — Jinja2 produce `cv.html` y Playwright genera `cv.pdf`.
 
 Cada corrida es incremental: los jobs ya tailorizados se saltean a menos que
 pases `--force`.
@@ -95,6 +143,7 @@ Los CVs se generan bajo `output/` anidados por fecha:
             ├── analysis.json
             ├── analysis_repaired.json   (solo si hubo repair)
             ├── evaluation.json
+            ├── job_summary.json         (resumen estructurado de la oferta)
             ├── job_description.txt
             └── cv_style.css
 

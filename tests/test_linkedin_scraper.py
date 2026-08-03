@@ -13,6 +13,7 @@ from src.extract.linkedin_scraper import (
     JOB_URL_RE,
     SavedJob,
     _extract_job_urls,
+    _job_id_from_url,
     _normalize_job_url,
     _parse_job_detail,
 )
@@ -73,12 +74,48 @@ class TestNormalizeJobUrl:
         url = "https://www.linkedin.com/jobs/search/?keywords=data"
         assert _normalize_job_url(url) == url
 
+    def test_job_posting_id_url_normalized(self):
+        """Share links using `jobPostingId=` resolve to the canonical form."""
+        url = "https://www.linkedin.com/jobs/view/?jobPostingId=9876543210&refId=xyz"
+        assert _normalize_job_url(url) == "https://www.linkedin.com/jobs/view/9876543210/"
+
     def test_empty_string(self):
         assert _normalize_job_url("") == ""
 
     def test_non_linkedin_url_unchanged(self):
         url = "https://example.com/some/page"
         assert _normalize_job_url(url) == url
+
+
+class TestJobIdFromUrl:
+    def test_canonical(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/view/123/") == "123"
+
+    def test_slugged_canonical(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/view/data-engineer-acme-456/") == "456"
+
+    def test_view_with_current_job_id(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/view/?currentJobId=789") == "789"
+
+    def test_search_current_job_id(self):
+        assert _job_id_from_url(
+            "https://www.linkedin.com/jobs/search-results/?currentJobId=4429119711&refId=a"
+        ) == "4429119711"
+
+    def test_rewards_current_job_id(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/c/rewards/?currentJobId=555") == "555"
+
+    def test_share_job_posting_id(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/view/?jobPostingId=321") == "321"
+
+    def test_no_id_returns_empty(self):
+        assert _job_id_from_url("https://www.linkedin.com/jobs/search/?keywords=data") == ""
+
+    def test_empty_returns_empty(self):
+        assert _job_id_from_url("") == ""
+
+    def test_non_linkedin_returns_empty(self):
+        assert _job_id_from_url("https://example.com/x") == ""
 
 
 class TestExtractJobUrls:

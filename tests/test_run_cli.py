@@ -1,27 +1,32 @@
-"""Tests for run.py — CLI plumbing and incremental cache logic.
+"""Tests for run.py — CLI plumbing, incremental cache logic, and the pipeline
+stages (now including the job_summarizer pass).
 
-We don't invoke the LLM or any MCP server here; we patch the subsystems.
+We don't invoke the LLM or any MCP server here; we patch the subsystems and use
+a stub LLM client.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
-import argparse
 import pytest
 
 import run as run_module
 from run import (
+    _already_generated,
     _is_processed,
     _job_cache_path,
     _load_cached_jobs,
+    _load_index,
     _save_job_cache,
     _tailor_one,
+    _upsert_job_cache,
 )
 from src.config import settings
 from src.extract.linkedin_scraper import SavedJob
-from src.profile.cv_reader import CVEntry, CVProfile, CVSection
+from src.profile.cv_reader import CVBullet, CVEntry, CVItem, CVProfile, CVSection, PersonalInfo
 from tests.test_helpers_llm import StubLLMClient, llm_response
 
 
@@ -81,55 +86,109 @@ class TestCacheHelpers:
         assert _is_processed(_make_job()) is False
 
 
+class TestRegistry:
+    """The `jobs/_index.json` registry keyed by job_id (dedup across URL
+    variants + state preservation on re-extraction)."""
+
+    def test_save_job_cache_writes_index(self, jobs_dir):
+        job = _make_job()
+        _save_job_cache(job, tailored=True, cv_generated_at="2026-08-02T10:00:00+00:00",
+                        cv_pdf_path="output/x/cv.pdf")
+        index = _load_index()
+        rec = index.get("12345")
+        assert rec is not None
+        assert rec["tailored"] is True
+        assert rec["cv_generated_at"] == "2026-08-02T10:00:00+00:00"
+        assert rec["cv_pdf_path"] == "output/x/cv.pdf"
+        assert rec["status"] == "done"
+
+    def test_upsert_job_cache_preserves_tailored_state(self, jobs_dir):
+        """A re-extraction (upsert) must NOT reset tailored=true of an offer
+        that already has a CV — this is what fixes the old `all` reset bug."""
+        _save_job_cache(_make_job(), tailored=True, cv_generated_at="2026-08-01T09:00:00+00:00",
+                        cv_pdf_path="output/a/cv.pdf")
+        # Re-scrape the same offer (same job_id), no generation info.
+        _upsert_job_cache(_make_job(title="Same Offer Renamed"))
+        assert _is_processed(_make_job()) is True
+        data = json.loads(_job_cache_path(_make_job()).read_text(encoding="utf-8"))
+        assert data["tailored"] is True
+        assert data["cv_pdf_path"] == "output/a/cv.pdf"
+        rec = _load_index().get("12345")
+        assert rec["tailored"] is True
+        assert rec["status"] == "done"
+
+    def test_index_keyed_by_job_id_not_url(self, jobs_dir):
+        """Same job reached via different URL variants maps to ONE registry key."""
+        _upsert_job_cache(_make_job(url="https://www.linkedin.com/jobs/view/12345/"))
+        _upsert_job_cache(_make_job(url="https://www.linkedin.com/jobs/search-results/?currentJobId=12345"))
+        index = _load_index()
+        ids = {k for k in index.keys()}
+        assert ids == {"12345"}
+
+    def test_already_generated_detects_pasted_link(self, jobs_dir):
+        _save_job_cache(_make_job(), tailored=True, cv_generated_at="2026-08-01T09:00:00+00:00",
+                        cv_pdf_path="output/a/cv.pdf")
+        # User pastes a DIFFERENT URL variant of the same offer.
+        rec = _already_generated(
+            "https://www.linkedin.com/jobs/search-results/?currentJobId=12345&refId=abc"
+        )
+        assert rec is not None
+        assert rec["cv_pdf_path"] == "output/a/cv.pdf"
+
+    def test_already_generated_returns_none_for_unknown(self, jobs_dir):
+        assert _already_generated("https://www.linkedin.com/jobs/view/999999/") is None
+
+
 def _base_profile() -> CVProfile:
-    """Base profile mirroring the new schema (typed entries)."""
+    """Base profile mirroring the new generic schema."""
     return CVProfile(
-        name="ALEX",
-        contact="email",
-        contact_enlaces=[],
-        summary="x",
+        personal_info=PersonalInfo(name="MARÍA", email="maria@example.com"),
+        summary="Perfil orientada a datos.",
         sections=[
-            CVSection(title="Educación", kind="educacion", entries=[
-                CVEntry(titulo="Example University — Lima", fecha="2021 – 2026",
-                        subtitulo="Lic. en Economía | En proceso")
+            CVSection(id="exp", title="Experiencia Laboral", type="entry_block",
+                      reorderable=False, entries=[
+                CVEntry(heading="ExampleCorp — Intern", dates="Nov 2024 – Feb 2025",
+                        bullets=[CVBullet(text="Automaticé la validación de facturas.")]),
             ]),
-            CVSection(title="Experiencia Laboral", kind="experiencia", entries=[
-                CVEntry(titulo="ExampleCorp — Intern", fecha="Nov 2024 – Feb 2025",
-                        bullets=["Automaticé la validación de facturas."])
+            CVSection(id="proy", title="Proyectos", type="entry_block",
+                      reorderable=True, entries=[
+                CVEntry(heading="Project X", dates="2026", links=[],
+                        bullets=[CVBullet(text="Bullet 1."), CVBullet(text="Bullet 2.")]),
             ]),
-            CVSection(title="Proyectos", kind="proyectos", entries=[
-                CVEntry(titulo="Project X", fecha="2026",
-                        descriptor="(Tool)",
-                        bullets=["Bullet 1.", "Bullet 2."])
-            ]),
-            CVSection(title="Habilidades & Herramientas", kind="habilidades",
-                      table=[["Python", "Pandas"], ["Excel", "SAP"]]),
+            CVSection(id="hab", title="Habilidades & Herramientas", type="simple_list",
+                      items=[CVItem(text="Python"), CVItem(text="SQL")]),
         ],
         raw_text="...",
     )
 
 
+def _valid_job_summary() -> str:
+    return json.dumps({
+        "requisitos_duros": ["SQL", "Python"],
+        "skills_deseadas": ["Snowflake"],
+        "funciones_clave": ["Construir pipelines"],
+    }, ensure_ascii=False)
+
+
 def _valid_tailored_json() -> str:
     return json.dumps({
-        "summary": "x",
+        "summary": "Perfil orientada a datos y automatización.",
         "sections": [
-            {"title": "Educación", "kind": "educacion", "entries": [
-                {"titulo": "Example University — Lima", "fecha": "2021 – 2026",
-                 "subtitulo": "Lic. en Economía | En proceso",
-                 "descriptor": "", "bullets": []}
-            ], "table": []},
-            {"title": "Experiencia Laboral", "kind": "experiencia", "entries": [
-                {"titulo": "ExampleCorp — Intern", "fecha": "Nov 2024 – Feb 2025",
-                 "subtitulo": "", "descriptor": "",
-                 "bullets": ["Automaticé la validación de facturas."]}
-            ], "table": []},
-            {"title": "Proyectos", "kind": "proyectos", "entries": [
-                {"titulo": "Project X", "fecha": "2026",
-                 "subtitulo": "", "descriptor": "(Tool)",
-                 "bullets": ["Bullet 1.", "Bullet 2."]}
-            ], "table": []},
-            {"title": "Habilidades & Herramientas", "kind": "habilidades",
-             "entries": [], "table": [["Python", "Pandas"], ["Excel", "SAP"]]},
+            {"id": "exp", "title": "Experiencia Laboral", "type": "entry_block",
+             "reorderable": False, "entries": [
+                {"heading": "ExampleCorp — Intern", "subheading": "", "location": "",
+                 "dates": "Nov 2024 – Feb 2025",
+                 "bullets": [{"text": "Automaticé la validación de facturas.", "tags": []}]}
+             ], "items": [], "text": ""},
+            {"id": "proy", "title": "Proyectos", "type": "entry_block",
+             "reorderable": True, "entries": [
+                {"heading": "Project X", "subheading": "", "location": "",
+                 "dates": "2026", "bullets": [
+                    {"text": "Bullet 1.", "tags": []}, {"text": "Bullet 2.", "tags": []}]}
+             ], "items": [], "text": ""},
+            {"id": "hab", "title": "Habilidades & Herramientas", "type": "simple_list",
+             "reorderable": False, "entries": [], "items": [
+                {"text": "Python", "tags": []}, {"text": "SQL", "tags": []}], "text": ""},
         ],
     }, ensure_ascii=False)
 
@@ -139,7 +198,7 @@ def output_dir(tmp_path, monkeypatch):
     """Redirect settings.output_dir + base_cv_path + html/pdf renderers."""
     out = tmp_path / "output"
     out.mkdir(parents=True, exist_ok=True)
-    base = _fake_base_html(tmp_path)
+    base = _fake_base_yaml(tmp_path)
     orig_out = run_module.settings.output_dir
     orig_base = run_module.settings.base_cv_path
     object.__setattr__(run_module.settings, "output_dir", out)
@@ -157,20 +216,23 @@ def output_dir(tmp_path, monkeypatch):
 
 
 class TestTailorOne:
-    def test_dry_run_creates_job_description_only(self, output_dir):
+    def test_dry_run_creates_no_filesystem_side_effects(self, output_dir):
         job = _make_job()
         out = _tailor_one(client=None, base_profile=_base_profile(), job=job, dry_run=True)
         assert out is not None
-        assert (out / "job_description.txt").exists()
-        # No analysis.json in dry-run
+        # Dry-run is purely informational: it must NOT create the output
+        # folder, write job_description.txt, or touch any file under output/.
+        assert not out.exists()
+        assert not (out / "job_description.txt").exists()
         assert not (out / "analysis.json").exists()
 
     def test_full_run_produces_analysis_and_evaluation(self, output_dir):
         """Full run with stubbed LLM + patched HTML/PDF renderer."""
         stub = StubLLMClient([
-            llm_response(_valid_tailored_json()),
+            llm_response(_valid_job_summary()),          # 1: summarize
+            llm_response(_valid_tailored_json()),        # 2: tailor
             llm_response(json.dumps({"issues": [], "overall_verdict": "pass",
-                                      "summary": "ok"})),
+                                      "summary": "ok"})),  # 3: evaluate
         ])
         job = _make_job()
         out = _tailor_one(client=stub, base_profile=_base_profile(),
@@ -178,11 +240,48 @@ class TestTailorOne:
         assert out is not None
         assert (out / "analysis.json").exists()
         assert (out / "evaluation.json").exists()
+        assert (out / "job_summary.json").exists()
         # No repaired file when verdict is pass
         assert not (out / "analysis_repaired.json").exists()
 
+    def test_job_summary_is_cached_not_recomputed(self, output_dir):
+        """A cached job_summary.json is reused — the summarize LLM call is
+        skipped (only tailor + evaluate run)."""
+        stub = StubLLMClient([
+            llm_response(_valid_tailored_json()),
+            llm_response(json.dumps({"issues": [], "overall_verdict": "pass",
+                                      "summary": "ok"})),
+        ])
+        job = _make_job()
+        out = _resolve_out(output_dir, job)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "job_summary.json").write_text(
+            json.dumps({"requisitos_duros": ["cached"], "skills_deseadas": [],
+                        "funciones_clave": []}), encoding="utf-8")
+        _tailor_one(client=stub, base_profile=_base_profile(), job=job, dry_run=False)
+        assert len(stub.calls) == 2  # no summarize call
+
+    def test_force_recomputes_job_summary(self, output_dir):
+        """With --force, even a cached summary is recomputed."""
+        stub = StubLLMClient([
+            llm_response(_valid_job_summary()),
+            llm_response(_valid_tailored_json()),
+            llm_response(json.dumps({"issues": [], "overall_verdict": "pass",
+                                      "summary": "ok"})),
+        ])
+        job = _make_job()
+        out = _resolve_out(output_dir, job)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "job_summary.json").write_text(
+            json.dumps({"requisitos_duros": ["stale"], "skills_deseadas": [],
+                        "funciones_clave": []}), encoding="utf-8")
+        _tailor_one(client=stub, base_profile=_base_profile(), job=job,
+                    dry_run=False, force=True)
+        assert len(stub.calls) == 3  # summarize recomputed
+
     def test_repair_pass_writes_repaired_json(self, output_dir):
         stub = StubLLMClient([
+            llm_response(_valid_job_summary()),
             llm_response(_valid_tailored_json()),
             llm_response(json.dumps({
                 "issues": [{
@@ -200,68 +299,71 @@ class TestTailorOne:
 
     def test_tailored_with_no_sections_is_failure(self, output_dir):
         bad = json.dumps({"summary": "x", "sections": []})
-        stub = StubLLMClient([llm_response(bad)])
+        stub = StubLLMClient([llm_response(_valid_job_summary()), llm_response(bad)])
         result = _tailor_one(client=stub, base_profile=_base_profile(),
                               job=_make_job(), dry_run=False)
         assert result is None
 
+    def test_evaluation_disabled_skips_evaluate(self, output_dir):
+        """ENABLE_EVALUATION=false: only summarize + tailor are called; no
+        evaluate/repair, and a cv.pdf is still produced (renderer is patched
+        here, so we assert no evaluation.json is written)."""
+        orig = run_module.settings.enable_evaluation
+        object.__setattr__(run_module.settings, "enable_evaluation", False)
+        try:
+            stub = StubLLMClient([
+                llm_response(_valid_job_summary()),
+                llm_response(_valid_tailored_json()),
+            ])
+            out = _tailor_one(client=stub, base_profile=_base_profile(),
+                              job=_make_job(), dry_run=False)
+            assert out is not None
+            assert (out / "analysis.json").exists()
+            assert not (out / "evaluation.json").exists()
+            assert len(stub.calls) == 2
+        finally:
+            object.__setattr__(run_module.settings, "enable_evaluation", orig)
 
-def _fake_base_html(tmp_path: Path) -> Path:
-    """Build a minimal HTML fixture mirroring the real CV structure."""
-    html = """<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8"><title>x</title></head>
-<body>
-  <div class="header">
-    <div class="header-main">
-      <p class="name">ALEX</p>
-      <p class="contact-line">email</p>
-      <p class="tagline">En búsqueda de un puesto en x</p>
-    </div>
-  </div>
 
-  <div class="section">
-    <p class="section-title">Educación</p>
-    <div class="entry-row">
-      <span class="entry-title">Example University — Lima</span>
-      <span class="entry-date">2021 – 2026</span>
-    </div>
-    <p class="entry-subtitle">Lic. en Economía | En proceso</p>
-  </div>
+def _resolve_out(out_dir: Path, job: SavedJob) -> Path:
+    return run_module._resolve_job_folder(job)
 
-  <div class="section">
-    <p class="section-title">Experiencia Laboral</p>
-    <div class="entry-block">
-      <div class="entry-row">
-        <span class="entry-title">ExampleCorp — Intern</span>
-        <span class="entry-date">Nov 2024 – Feb 2025</span>
-      </div>
-      <ul class="bullets"><li>Automaticé la validación de facturas.</li></ul>
-    </div>
-  </div>
 
-  <div class="section">
-    <p class="section-title">Proyectos</p>
-    <div class="project-block">
-      <div class="project-header">
-        <span class="project-title">Project X</span>
-        <span class="entry-date">2026</span>
-      </div>
-      <p class="project-links">(Tool)</p>
-      <ul class="bullets"><li>Bullet 1.</li><li>Bullet 2.</li></ul>
-    </div>
-  </div>
-
-  <div class="section">
-    <p class="section-title">Habilidades &amp; Herramientas</p>
-    <table class="skills-table">
-      <tr><td class="skill-label">Python</td><td>Pandas</td></tr>
-      <tr><td class="skill-label">Excel</td><td>SAP</td></tr>
-    </table>
-  </div>
-</body></html>
+def _fake_base_yaml(tmp_path: Path) -> Path:
+    """Build a minimal YAML fixture mirroring the real base CV structure."""
+    yaml_text = """personal_info:
+  name: "MARÍA"
+  email: "maria@example.com"
+summary: "Perfil orientada a datos."
+sections:
+  - id: exp
+    title: "Experiencia Laboral"
+    type: entry_block
+    reorderable: false
+    entries:
+      - heading: "ExampleCorp — Intern"
+        dates: "Nov 2024 – Feb 2025"
+        bullets:
+          - text: "Automaticé la validación de facturas."
+  - id: proy
+    title: "Proyectos"
+    type: entry_block
+    reorderable: true
+    entries:
+      - heading: "Project X"
+        dates: "2026"
+        bullets:
+          - text: "Bullet 1."
+          - text: "Bullet 2."
+  - id: hab
+    title: "Habilidades & Herramientas"
+    type: simple_list
+    items:
+      - text: "Python"
+      - text: "SQL"
 """
-    path = tmp_path / "base_cv.html"
-    path.write_text(html, encoding="utf-8")
+    path = tmp_path / "base_cv.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
     return path
 
 
@@ -375,7 +477,6 @@ class TestListCommand:
         orig = run_module.settings.output_dir
         object.__setattr__(run_module.settings, "output_dir", out)
         try:
-            # Legacy slug form  "<date>_<slug>"  should resolve to the nested dir.
             d = run_module._resolve_job_output_dir(
                 "2026-07-22_practicante-pro-comercial_apparka"
             )
@@ -398,19 +499,19 @@ class TestRepairFiltering:
     """The url_tampered-only case should NOT trigger a repair LLM call."""
 
     def test_only_url_tampered_skips_repair(self, output_dir):
-        canned_tailor = _valid_tailored_json()
         canned_eval = json.dumps({
             "issues": [
                 {"id": "1", "type": "url_tampered", "severity": "high",
-                 "quote": "enlaces", "base_quote": None,
-                 "explanation": "stray enlaces", "suggested_fix": "remove"},
+                 "quote": "links", "base_quote": None,
+                 "explanation": "stray links", "suggested_fix": "remove"},
             ],
             "overall_verdict": "needs_repair", "summary": "url tampered",
         })
         stub = StubLLMClient([
-            llm_response(canned_tailor),
+            llm_response(_valid_job_summary()),
+            llm_response(_valid_tailored_json()),
             llm_response(canned_eval),
-            # If repair were invoked, it would need a 3rd response; its absence
+            # If repair were invoked, it would need a 4th response; its absence
             # would raise on StubLLMClient. Asserting no exception.
         ])
         out = _tailor_one(
@@ -421,8 +522,8 @@ class TestRepairFiltering:
         # evaluation.json written, no analysis_repaired.json (no repair).
         assert (out / "evaluation.json").exists()
         assert not (out / "analysis_repaired.json").exists()
-        # Only 2 LLM calls: tailor + evaluate (no repair).
-        assert len(stub.calls) == 2
+        # Only 3 LLM calls: summarize + tailor + evaluate (no repair).
+        assert len(stub.calls) == 3
 
 
 class TestBulkConfirmGuard:
@@ -480,7 +581,6 @@ class TestBulkConfirmGuard:
                 job_id=str(100 + i),
             ), tailored=True)
         monkeypatch.setattr("builtins.input", lambda _p: "n")
-        # Make sure no real LLM is touched even if the guard fails.
         called = {"v": 0}
         def _fake_make():
             called["v"] += 1

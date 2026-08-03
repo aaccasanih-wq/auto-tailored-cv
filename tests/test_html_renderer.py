@@ -1,13 +1,15 @@
-"""Tests for src/render/html_renderer.py — Jinja2 + template.
+"""Tests for src/render/html_renderer.py — Jinja2 + template (generic schema).
 
 Validates the HTML output:
   - has the right `<head>`/`<body>` shell
   - all rewritable blocks carry `contenteditable="true"` and a unique
     `data-field="..."` attribute
-  - hyperlinks from the analysis.json's `enlaces` arrays appear intact as
-    `<a href>` tags (URLs protect end-to-end)
+  - hyperlinks from the analysis.json's `links` arrays appear intact as
+    `<a href>` tags (URLs protected end-to-end)
   - the save button is injected
   - the shared CSS file is copied next to cv.html
+  - the 3 section `type`s (text_block / simple_list / entry_block) render
+    consistently, including a non-conventional section name.
 """
 
 from __future__ import annotations
@@ -23,71 +25,67 @@ from src.render import html_renderer
 
 @pytest.fixture
 def base_payload() -> dict:
-    """Minimal payload matching what html_renderer expects (analysis.json +
-    base CV header fields)."""
+    """Minimal payload matching the generic schema (analysis.json + base CV
+    personal_info header fields)."""
     return {
-        "name": "ALEX CANDIDATE",
-        "contact": "555 0100 | email@example.com | Sitio | Repos | Lima",
-        "contact_enlaces": [
-            {"texto": "Sitio", "url": "https://example.io/"},
-            {"texto": "Repos", "url": "https://github.com/x"},
-        ],
-        "summary": "En búsqueda de un puesto en Data Science · Análisis · Visualización",
+        "personal_info": {
+            "name": "MARÍA FERNANDA ROJAS",
+            "email": "maria@example.com",
+            "phone": "555 0100",
+            "location": "Lima, Perú",
+            "links": [
+                {"label": "Sitio", "url": "https://example.io/"},
+                {"label": "Repos", "url": "https://github.com/x"},
+            ],
+        },
+        "summary": "Perfil orientada a productos digitales y automatización.",
         "sections": [
             {
-                "title": "Educación",
-                "kind": "educacion",
-                "entries": [
-                    {
-                        "titulo": "Example University — Lima",
-                        "fecha": "2021 – 2026",
-                        "subtitulo": "Lic. en Economía | En proceso",
-                        "descriptor": "",
-                        "enlaces": [],
-                        "bullets": [],
-                    }
-                ],
-                "table": [],
+                "title": "Perfil Profesional",
+                "type": "text_block",
+                "text": "Ingeniera de Sistemas con experiencia en automatización.",
             },
             {
                 "title": "Experiencia Laboral",
-                "kind": "experiencia",
+                "type": "entry_block",
+                "reorderable": False,
                 "entries": [
                     {
-                        "titulo": "ExampleCorp — Intern",
-                        "fecha": "Nov 2024 – Feb 2025",
-                        "subtitulo": "",
-                        "descriptor": "",
-                        "enlaces": [],
-                        "bullets": ["Bullet 1 about Excel.", "Bullet 2 about SAP."],
+                        "heading": "Analista de Automatización — TechFlow Perú",
+                        "subheading": "Procesos",
+                        "location": "Lima",
+                        "dates": "Mar 2023 – Actualidad",
+                        "links": [
+                            {"label": "Proyecto", "url": "https://proyecto.example.com/"}
+                        ],
+                        "bullets": [
+                            {"text": "Bullet 1 sobre SAP.", "tags": ["sap"]},
+                            {"text": "Bullet 2 sobre Power BI.", "tags": ["powerbi"]},
+                        ],
                     }
                 ],
-                "table": [],
             },
             {
-                "title": "Proyectos",
-                "kind": "proyectos",
+                "title": "Certificaciones",
+                "type": "entry_block",
+                "reorderable": True,
                 "entries": [
                     {
-                        "titulo": "Rastreador de Gastos Automatizado con IA",
-                        "fecha": "May 2026",
-                        "subtitulo": "",
-                        "descriptor": "(Dashboard)",
-                        "enlaces": [
-                            {"texto": "Dashboard", "url": "https://example-dashboard.example.com/"}
-                        ],
-                        "bullets": ["A bullet", "Another bullet"],
+                        "heading": "Microsoft Power BI",
+                        "subheading": "",
+                        "location": "",
+                        "dates": "2024",
+                        "links": [],
+                        "bullets": [],
                     }
                 ],
-                "table": [],
             },
             {
                 "title": "Habilidades & Herramientas",
-                "kind": "habilidades",
-                "entries": [],
-                "table": [
-                    ["Python", "Pandas, NumPy, Jupyter"],
-                    ["Idiomas", "Español, Inglés"],
+                "type": "simple_list",
+                "items": [
+                    {"text": "Python (Pandas, Streamlit)", "tags": ["python"]},
+                    {"text": "SQL y Excel avanzado", "tags": ["sql"]},
                 ],
             },
         ],
@@ -112,130 +110,121 @@ class TestRender:
         self, tmp_path: Path, base_payload: dict
     ):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # The summary <p> must be contenteditable with data-field="summary"
         assert 'data-field="summary"' in html
         assert 'contenteditable="true"' in html
 
-    def test_bullets_are_contenteditable(self, tmp_path: Path, base_payload: dict):
+    def test_text_block_rendered_and_editable(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # Each <li> within ul.bullets should be contenteditable with data-field.
+        assert 'class="text-block"' in html
+        assert "Ingeniera de Sistemas con experiencia en automatización." in html
+        assert 'data-field="section.1.text"' in html
+
+    def test_entry_block_renders_all_fields(self, tmp_path: Path, base_payload: dict):
+        html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
+        assert "Analista de Automatización — TechFlow Perú" in html
+        assert "Procesos" in html
+        assert "Mar 2023 – Actualidad" in html
+        # bullets are contenteditable with data-field
         assert 'data-field="section.2.entry.0.bullet.0"' in html
-        assert 'data-field="section.3.entry.0.bullet.1"' in html
+        assert 'data-field="section.2.entry.0.bullet.1"' in html
 
-    def test_skills_table_td_is_contenteditable(self, tmp_path: Path, base_payload: dict):
+    def test_non_conventional_section_renders(self, tmp_path: Path, base_payload: dict):
+        """A section named 'Certificaciones' renders like any entry_block."""
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # row 0 of habilidades table is contenteditable with the right data-field
-        assert 'data-field="section.4.table.0"' in html
-        assert 'data-field="section.4.table.1"' in html
+        assert "Certificaciones" in html
+        assert "Microsoft Power BI" in html
 
-    def test_project_links_render_as_anchor_with_url_from_enlaces(
+    def test_simple_list_items_rendered_and_editable(
         self, tmp_path: Path, base_payload: dict
     ):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # The URL from entry.enlaces[0].url survives intact in the rendered HTML
-        assert 'href="https://example-dashboard.example.com/"' in html
-        # The visible link text also renders:
-        assert "Dashboard</a>" in html
-        # The parenthetical descriptor is rendered as `(<a>Dashboard</a>)` —
-        # that is, parens surround the `<a>` tag, and the descriptor is NOT
-        # inlined as a separate `(Dashboard)` plain text node next to the link.
-        import re
-        m = re.search(r"<p class=\"project-links\">([^<]*<a[^>]*>Dashboard</a>[^<]*)</p>",
-                       html)
-        assert m is not None, "project-links paragraph not found"
-        chunk = m.group(1).strip()
-        assert chunk.startswith("(")
-        assert chunk.endswith(")")
-        # The URL inside the anchor matches the analysis.json enlaces URL:
-        assert 'href="https://example-dashboard.example.com/"' in chunk
+        assert 'class="simple-list"' in html
+        assert "Python (Pandas, Streamlit)" in html
+        assert "SQL y Excel avanzado" in html
+        # items are contenteditable with data-field
+        assert 'data-field="section.4.item.0"' in html
+        assert 'data-field="section.4.item.1"' in html
+
+    def test_entry_links_render_as_anchor_with_url(self, tmp_path: Path, base_payload: dict):
+        html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
+        assert 'href="https://proyecto.example.com/"' in html
+        assert "Proyecto</a>" in html
 
     def test_save_button_is_present(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
         assert 'id="save-button"' in html
-        # The onclick handler is wired
         assert "guardarYGenerarPDF" in html
 
-    def test_immutable_titles_rendered_not_editable(
-        self, tmp_path: Path, base_payload: dict
-    ):
+    def test_section_title_not_editable(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # The section-title (Educación) is plain <p>, NOT contenteditable
-        # We assert it contains the title text and that the line with
-        # section-title does not have contenteditable.
         for line in html.splitlines():
             if "section-title" in line:
                 assert "contenteditable" not in line
                 break
 
-    def test_contact_links_reappear_in_html_header(
-        self, tmp_path: Path, base_payload: dict
-    ):
+    def test_contact_links_reappear_in_html_header(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
-        # contact_enlaces URLs are emitted as <a href> in the contact-line:
         assert 'href="https://example.io/"' in html
         assert 'href="https://github.com/x"' in html
+        assert "MARÍA FERNANDA ROJAS" in html
 
     def test_unique_data_field_per_bullet(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
         import re
         fields = re.findall(r'data-field="section\.2\.entry\.(\d+)\.bullet\.(\d+)"', html)
-        # Two bullets for entry 0 → fields (("0","0"), ("0","1"))
         assert ("0", "0") in fields
         assert ("0", "1") in fields
+
+    def test_unsupported_type_renders_visible_fallback(self, tmp_path: Path):
+        payload = {
+            "personal_info": {"name": "X", "email": "x@x.com"},
+            "summary": "s",
+            "sections": [{"title": "Rara", "type": "totally_unknown"}],
+        }
+        html = html_renderer.render(payload, tmp_path).read_text(encoding="utf-8")
+        assert "unsupported-type" in html
+        assert "totally_unknown" in html
 
 
 class TestRenderFromFile:
     def test_renders_from_analysis_json(self, tmp_path: Path, monkeypatch):
-        # Build a base_cv.html fixture and an analysis.json next to it.
         out_dir = tmp_path / "job"
         out_dir.mkdir(parents=True, exist_ok=True)
         analysis = {
-            "summary": "En búsqueda de un puesto en X · Y · Z",
+            "summary": "Perfil orientada a datos.",
             "sections": [
                 {
-                    "title": "Educación",
-                    "kind": "educacion",
-                    "entries": [
-                        {"titulo": "U", "fecha": "2021 – 2026",
-                         "subtitulo": "", "descriptor": "", "bullets": []}
-                    ],
-                    "table": [],
+                    "title": "Perfil Profesional",
+                    "type": "text_block",
+                    "text": "Perfil con experiencia en análisis.",
                 },
             ],
         }
         analysis_path = out_dir / "analysis.json"
         analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
 
-        # Build a fake base_cv.html with a matching header + section.
-        base_html = """<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>x</title></head>
-<body>
-<div class="header">
-  <div class="header-main">
-    <p class="name">ALEX</p>
-    <p class="contact-line">email@example</p>
-    <p class="tagline">Keep summary</p>
-  </div>
-</div>
-<div class="section">
-  <p class="section-title">Educación</p>
-  <div class="entry-row">
-    <span class="entry-title">U</span>
-    <span class="entry-date">2021 – 2026</span>
-  </div>
-</div>
-</body></html>"""
-        base_path = tmp_path / "base_cv.html"
-        base_path.write_text(base_html, encoding="utf-8")
+        # Build a fake base_cv.yaml with matching personal_info + section.
+        base_yaml = """personal_info:
+  name: "MARÍA FERNANDA"
+  email: "maria@example.com"
+summary: "keep"
+sections:
+  - id: perfil
+    title: "Perfil Profesional"
+    type: text_block
+    text: "base text"
+"""
+        base_path = tmp_path / "base_cv.yaml"
+        base_path.write_text(base_yaml, encoding="utf-8")
 
-        # Make html_renderer use this base path via settings.
         object.__setattr__(settings, "base_cv_path", base_path)
         try:
             rendered = html_renderer.render_from_file(analysis_path, base_path, out_dir)
             text = rendered.read_text(encoding="utf-8")
             assert 'data-field="summary"' in text
-            # section kind propagated from base (since analysis had no 'kind')
-            assert "Educación" in text
+            # personal_info supplemented from base CV
+            assert "MARÍA FERNANDA" in text
+            assert "Perfil con experiencia en análisis." in text
         finally:
             object.__setattr__(settings, "base_cv_path",
-                                Path("input/base_cv.html"))
+                                Path("input/base_cv.yaml"))

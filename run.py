@@ -26,19 +26,27 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config import ensure_dirs, settings
 from src.extract.linkedin_scraper import (
     SavedJob,
+    _job_id_from_url,
+    _normalize_job_url,
     extract_saved_jobs,
     save_jobs_json,
-    _normalize_job_url,
 )
 from src.profile.cv_reader import read_cv
+from src.profile.preferences import load_user_preferences
 from src.render import html_renderer, pdf_renderer
 from src.tailor.cv_rewriter import save_tailored_json, tailor_cv
 from src.tailor.evaluator import evaluate, save_evaluation_json
+from src.tailor.job_summarizer import (
+    load_job_summary,
+    save_job_summary,
+    summarize_job,
+)
 from src.tailor.llm_client import make_client
 from src.tailor.prompts import JobInfo
 from src.tailor.repair import repair_cv, save_repaired_json
@@ -49,8 +57,155 @@ log = get_logger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Cache helpers                                                               #
+# Cache + registry helpers                                                     #
 # --------------------------------------------------------------------------- #
+#
+# Besides the per-job cache files (`jobs/<id>.json`) there is a lightweight
+# registry (`jobs/_index.json`) keyed by the CANONICAL LinkedIn job id. Its job:
+#   - know, without reading every cache file, whether a CV was already generated
+#     for a job id (regardless of which URL variant the user pasted);
+#   - preserve the "already generated" state when `all` re-extracts saved jobs
+#     (the old code reset `tailored=False` on every extraction, silently
+#     re-tailorizing everything).
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _index_path() -> Path:
+    return settings.jobs_dir / "_index.json"
+
+
+def _load_index() -> dict[str, dict]:
+    p = _index_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_index(index: dict[str, dict]) -> None:
+    p = _index_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _index_key(job: SavedJob) -> str:
+    return job.job_id or _job_id_from_url(job.url) or _normalize_job_url(job.url) or job.url
+
+
+def _build_index_record(
+    job: SavedJob,
+    prev: dict,
+    *,
+    tailored: bool,
+    cv_generated_at: str = "",
+    cv_pdf_path: str = "",
+) -> dict:
+    """Build a registry record for `job`, merging with the previous record.
+
+    The registry NEVER downgrades an existing "already generated a CV" state:
+    if the previous record had `tailored=true` and the new value is `false`
+    (e.g. a plain re-extraction), the previous state wins.
+    """
+    effective_tailored = bool(prev.get("tailored", False)) or bool(tailored)
+    return {
+        "job_id": job.job_id or prev.get("job_id", ""),
+        "url_original": job.url,
+        "url_canonica": _normalize_job_url(job.url),
+        "title": job.title or prev.get("title", ""),
+        "company": job.company or prev.get("company", ""),
+        "location": job.location or prev.get("location", ""),
+        "saved_at_iso": job.saved_at_iso or prev.get("saved_at_iso", ""),
+        "tailored": effective_tailored,
+        "status": "done" if effective_tailored else "pending",
+        "cv_generated_at": cv_generated_at or prev.get("cv_generated_at", ""),
+        "cv_pdf_path": cv_pdf_path or prev.get("cv_pdf_path", ""),
+        "last_seen_at": prev.get("last_seen_at", "") or _now_iso(),
+    }
+
+
+def _upsert_index(
+    job: SavedJob,
+    *,
+    tailored: bool,
+    cv_generated_at: str = "",
+    cv_pdf_path: str = "",
+) -> None:
+    """Upsert the registry record for a job (never downgrades existing state)."""
+    key = _index_key(job)
+    index = _load_index()
+    prev = index.get(key) or {}
+    index[key] = _build_index_record(
+        job, prev, tailored=tailored, cv_generated_at=cv_generated_at, cv_pdf_path=cv_pdf_path
+    )
+    _save_index(index)
+
+
+def _backfill_index() -> None:
+    """Populate the registry from the existing per-job cache files.
+
+    Needed so that jobs cached before this feature (already-tailored ones
+    included) get registry entries without waiting for their next extraction —
+    otherwise the "already generated a CV" guard would not fire for them.
+    Idempotent: skips files whose record is already present and unchanged.
+    """
+    if not settings.jobs_dir.exists():
+        return
+    index = _load_index()
+    dirty = False
+    for f in sorted(settings.jobs_dir.glob("*.json")):
+        if f.name.startswith("_"):
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        job = SavedJob(
+            title=data.get("title", "") or "",
+            url=data.get("url", "") or "",
+            company=data.get("company", "") or "",
+            location=data.get("location", "") or "",
+            saved_at_iso=data.get("saved_at_iso", "") or "",
+            description=data.get("description", "") or "",
+            job_id=data.get("job_id", "") or "",
+            warnings=data.get("warnings", []) or [],
+        )
+        key = _index_key(job)
+        record = _build_index_record(
+            job,
+            index.get(key) or {},
+            tailored=bool(data.get("tailored", False)),
+            cv_generated_at=data.get("cv_generated_at", ""),
+            cv_pdf_path=data.get("cv_pdf_path", ""),
+        )
+        if index.get(key) != record:
+            index[key] = record
+            dirty = True
+    if dirty:
+        _save_index(index)
+
+
+def _generated_cv_info(job: SavedJob) -> dict:
+    """Return generation metadata (date + pdf path) for a job from the registry,
+    falling back to the per-job cache file."""
+    key = _index_key(job)
+    rec = _load_index().get(key) or {}
+    if rec.get("cv_generated_at") or rec.get("cv_pdf_path"):
+        return rec
+    cache = _job_cache_path(job)
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return rec
 
 
 def _job_cache_path(job: SavedJob) -> Path:
@@ -73,12 +228,53 @@ def _is_processed(job: SavedJob) -> bool:
     return bool(data.get("tailored", False))
 
 
-def _save_job_cache(job: SavedJob, tailored: bool) -> None:
+def _save_job_cache(
+    job: SavedJob,
+    tailored: bool,
+    cv_generated_at: str = "",
+    cv_pdf_path: str = "",
+) -> None:
     cache = _job_cache_path(job)
     cache.parent.mkdir(parents=True, exist_ok=True)
     payload = job.to_dict()
     payload["tailored"] = tailored
+    if cv_generated_at:
+        payload["cv_generated_at"] = cv_generated_at
+    if cv_pdf_path:
+        payload["cv_pdf_path"] = cv_pdf_path
     cache.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _upsert_index(job, tailored=tailored, cv_generated_at=cv_generated_at, cv_pdf_path=cv_pdf_path)
+
+
+def _upsert_job_cache(job: SavedJob) -> None:
+    """Merge a freshly-scraped job into its cache file WITHOUT losing the
+    "already generated a CV" state.
+
+    Used by `do_extract`: a re-extraction must refresh title/company/description
+    but must NOT reset `tailored` (or drop `cv_generated_at` / `cv_pdf_path`) of
+    a job that already has a CV — otherwise every `all` run would silently
+    re-tailorize everything.
+    """
+    cache = _job_cache_path(job)
+    prev: dict = {}
+    if cache.exists():
+        try:
+            prev = json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            prev = {}
+    payload = job.to_dict()
+    payload["tailored"] = bool(prev.get("tailored", False))
+    for key in ("cv_generated_at", "cv_pdf_path"):
+        if prev.get(key):
+            payload[key] = prev[key]
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _upsert_index(
+        job,
+        tailored=payload["tailored"],
+        cv_generated_at=payload.get("cv_generated_at", ""),
+        cv_pdf_path=payload.get("cv_pdf_path", ""),
+    )
 
 
 def _load_cached_jobs() -> list[SavedJob]:
@@ -129,7 +325,9 @@ def do_extract(
         log.warning("no saved jobs were extracted")
         return []
     for job in jobs:
-        _save_job_cache(job, tailored=False)
+        # Upsert preserves the "already generated a CV" state (see
+        # _upsert_job_cache) instead of resetting tailored=False on every run.
+        _upsert_job_cache(job)
     save_jobs_json(jobs, settings.jobs_dir / "_all_saved_jobs.json")
     log.info("extracted %d saved jobs", len(jobs))
     return jobs
@@ -147,21 +345,16 @@ def _render_job_html_pdf(
 ) -> tuple[Path | None, Path | None]:
     """Render the tailored JSON to cv.html + cv.pdf via Jinja2 + Playwright."""
     try:
-        # Supplement the analysis.json with header (name/contact/contact_enlaces)
-        # from the base CV so the rendered page matches base_cv.html's header.
+        # Supplement the analysis.json with `personal_info` (name/contact/links)
+        # from the base CV so the rendered page header is complete.
         base_profile = read_cv(settings.base_cv_path)
         payload = dict(tailored_json)
-        payload.setdefault("name", base_profile.name)
-        payload.setdefault("contact", base_profile.contact)
-        payload.setdefault(
-            "contact_enlaces",
-            [e.to_dict() for e in base_profile.contact_enlaces],
-        )
-        # Make sure each section has a 'kind' so the Jinja template renders
-        # the right blocks. Default-derive from base CV by title match.
-        base_by_title = {s.title: s.kind for s in base_profile.sections}
+        payload.setdefault("personal_info", base_profile.personal_info.to_dict())
+        # Make sure each section has a 'type' so the Jinja template renders the
+        # right generic blocks. Default-derive from base CV by title match.
+        base_by_title = {s.title: s.type for s in base_profile.sections}
         for s in payload.get("sections", []) or []:
-            s.setdefault("kind", base_by_title.get(s.get("title", ""), ""))
+            s.setdefault("type", base_by_title.get(s.get("title", ""), ""))
         html_path = html_renderer.render(payload, out_dir)
     except Exception as e:
         log.error("html rendering failed: %s", e)
@@ -181,7 +374,19 @@ def _render_job_legacy_docx(
     tailored_json: dict,
     out_dir: Path,
 ) -> Path | None:
-    """Render via the legacy python-docx + LibreOffice path (behind --legacy-docx)."""
+    """Render via the legacy python-docx + LibreOffice path (behind --legacy-docx).
+
+    This path needs the OLD base_cv.docx template — it is kept for backwards
+    compatibility only and does NOT work with the new YAML base CV. If the
+    configured base_cv_path is not a .docx, it is skipped with a clear log.
+    """
+    if settings.base_cv_path.suffix.lower() != ".docx":
+        log.warning(
+            "--legacy-docx requires a base_cv.docx template, but "
+            "BASE_CV_PATH=%s (the new YAML format). Skipping legacy render.",
+            settings.base_cv_path,
+        )
+        return None
     try:
         from src.render.legacy.docx_writer import write_tailored_docx
         from src.render.legacy.pdf_converter import convert_docx_to_pdf
@@ -206,59 +411,87 @@ def _tailor_one(
     job: SavedJob,
     dry_run: bool,
     legacy_docx: bool = False,
+    force: bool = False,
+    user_preferences: str = "",
 ) -> Path | None:
-    """Run tailor + evaluate + repair + render for a single job. Returns the
-    output folder path, or None on failure."""
-    job_info = JobInfo(
-        title=job.title,
-        company=job.company,
-        location=job.location,
-        description=job.description,
-    )
-
+    """Run summarize + tailor (+ evaluate + repair) + render for a single job.
+    Returns the output folder path, or None on failure."""
     out_dir = _resolve_job_folder(job)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    (out_dir / "job_description.txt").write_text(job.description, encoding="utf-8")
 
     if dry_run:
         log.info("[dry-run] would tailor for '%s' at %s -> %s", job.title, job.company, out_dir)
         return out_dir
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "job_description.txt").write_text(job.description, encoding="utf-8")
+
+    # --- Job summary: computed ONCE per offer, cached; re-computed on --force.
+    # The RAW description never reaches tailor/evaluate/repair — only this
+    # summary does (biggest token saving of the redesign).
+    summary_path = out_dir / "job_summary.json"
+    job_summary = load_job_summary(summary_path) if not force else None
+    if job_summary is None:
+        log.info("summarizing job description for '%s' at %s", job.title, job.company)
+        job_summary = summarize_job(
+            client,
+            JobInfo(title=job.title, company=job.company, description=job.description),
+        )
+        save_job_summary(job_summary, summary_path)
+
+    job_info = JobInfo(
+        title=job.title,
+        company=job.company,
+        location=job.location,
+        description=job.description,
+        summary=job_summary,
+    )
+
     log.info("tailoring CV for '%s' at %s", job.title, job.company)
-    tailored = tailor_cv(client, base_profile, job_info)
+    tailored = tailor_cv(client, base_profile, job_info, user_preferences=user_preferences)
     save_tailored_json(tailored, out_dir / "analysis.json")
     if tailored.tailored_json is None or not tailored.tailored_json.get("sections"):
         log.error("tailor produced empty/null sections for %s; skipping", job.title)
         return None
 
-    log.info("evaluating tailored CV for '%s'", job.title)
-    evaluation = evaluate(client, base_profile, job_info, tailored.tailored_json)
-
     final_json = tailored.tailored_json
-    # `url_tampered` issues are deterministic: the orchestrator re-injects
-    # protected URLs from the base CV AFTER the tailor pass, so whatever the
-    # tailor emitted (or didn't) gets overwritten byte-identical anyway. We
-    # never need to spend a repair LLM call on them. Same for `format` shape
-    # issues — `_validate_shape` already flagged them deterministically and
-    # the repair pass can't reliably fix shape. Filter them out before
-    # deciding whether to invoke repair.
-    DETERMINISTIC_ISSUE_TYPES = {"url_tampered", "format"}
-    semantic_issues = [
-        i for i in evaluation.issues
-        if i.get("type") not in DETERMINISTIC_ISSUE_TYPES
-    ]
-    needs_repair = (
-        evaluation.verdict == "fail"
-        or any(i.get("severity") == "high" for i in semantic_issues)
-    )
-    if needs_repair and semantic_issues:
-        log.info("repairing %d semantic issue(s) for '%s'", len(semantic_issues), job.title)
-        repaired = repair_cv(client, base_profile, tailored.tailored_json, semantic_issues)
-        if repaired.repaired_json:
-            final_json = repaired.repaired_json
-            save_repaired_json(repaired, out_dir / "analysis_repaired.json")
-    save_evaluation_json(evaluation, out_dir / "evaluation.json")
+    if settings.enable_evaluation:
+        log.info("evaluating tailored CV for '%s'", job.title)
+        evaluation = evaluate(
+            client, base_profile, job_info, tailored.tailored_json,
+            user_preferences=user_preferences,
+        )
+        # `url_tampered` issues are deterministic: the orchestrator re-injects
+        # protected URLs from the base CV AFTER the tailor pass, so whatever the
+        # tailor emitted (or didn't) gets overwritten byte-identical anyway. We
+        # never need to spend a repair LLM call on them. Same for `format` shape
+        # issues — `_validate_shape` already flagged them deterministically and
+        # the repair pass can't reliably fix shape. Filter them out before
+        # deciding whether to invoke repair.
+        DETERMINISTIC_ISSUE_TYPES = {"url_tampered", "format"}
+        semantic_issues = [
+            i for i in evaluation.issues
+            if i.get("type") not in DETERMINISTIC_ISSUE_TYPES
+        ]
+        needs_repair = (
+            evaluation.verdict == "fail"
+            or any(i.get("severity") == "high" for i in semantic_issues)
+        )
+        if needs_repair and semantic_issues:
+            log.info("repairing %d semantic issue(s) for '%s'", len(semantic_issues), job.title)
+            repaired = repair_cv(
+                client, base_profile, tailored.tailored_json, semantic_issues,
+                user_preferences=user_preferences,
+            )
+            if repaired.repaired_json:
+                final_json = repaired.repaired_json
+                save_repaired_json(repaired, out_dir / "analysis_repaired.json")
+        save_evaluation_json(evaluation, out_dir / "evaluation.json")
+    else:
+        log.info(
+            "ENABLE_EVALUATION=false — skipping evaluate + repair for '%s' "
+            "(nada verifica alucinaciones ni copiado literal de la oferta)",
+            job.title,
+        )
 
     if legacy_docx:
         log.info("rendering .docx/.pdf (legacy) for '%s'", job.title)
@@ -267,7 +500,22 @@ def _tailor_one(
         log.info("rendering cv.html/cv.pdf for '%s'", job.title)
         _render_job_html_pdf(final_json, out_dir)
 
-    _save_job_cache(job, tailored=True)
+    # Record generation metadata in the registry so the user (and the CLI) can
+    # tell which offers already have a CV.
+    cv_pdf = out_dir / "cv.pdf"
+    cv_html = out_dir / "cv.html"
+    if cv_pdf.exists():
+        artifact = str(cv_pdf)
+    elif cv_html.exists():
+        artifact = str(cv_html)
+    else:
+        artifact = str(out_dir)
+    _save_job_cache(
+        job,
+        tailored=True,
+        cv_generated_at=_now_iso(),
+        cv_pdf_path=artifact,
+    )
     log.info("done: %s", out_dir)
     return out_dir
 
@@ -282,7 +530,10 @@ def do_tailor(
         log.warning("no jobs to tailor")
         return []
     base_profile = read_cv(settings.base_cv_path)
+    user_prefs = load_user_preferences(settings.preferences_path)
     log.info("base CV (%s): %d sections", settings.base_cv_path, len(base_profile.sections))
+    if user_prefs:
+        log.info("personal preferences loaded from %s", settings.preferences_path)
     if dry_run:
         client = None  # type: ignore[assignment]
     else:
@@ -298,11 +549,19 @@ def do_tailor(
     for i, job in enumerate(jobs, start=1):
         log.info("--- [%d/%d] %s @ %s ---", i, len(jobs), job.title, job.company)
         if not force and _is_processed(job):
-            log.info("already processed — skipping (use --force to redo).")
+            info = _generated_cv_info(job)
+            when = f" el {info.get('cv_generated_at')}" if info.get("cv_generated_at") else ""
+            where = f" -> {info.get('cv_pdf_path')}" if info.get("cv_pdf_path") else ""
+            log.info(
+                "ya hay un CV generado para esta oferta%s%s — saltando "
+                "(usá --force para regenerarlo).",
+                when, where,
+            )
             continue
         try:
             out = _tailor_one(
                 client, base_profile, job, dry_run=dry_run, legacy_docx=legacy_docx,
+                force=force, user_preferences=user_prefs,
             )
             if out is not None:
                 outputs.append(out)
@@ -342,7 +601,7 @@ def _confirm_bulk(job_count: int) -> bool:
     prompt = (
         f"About to (re)tailor {job_count} jobs in one go. "
         "This will make ~{n} LLM calls and can take several minutes.\n"
-        "Proceed? [y/N] ".format(n=job_count * 3)
+        "Proceed? [y/N] ".format(n=job_count * 4)
     )
     try:
         answer = input(prompt)
@@ -384,13 +643,51 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def _matches_job_url(job: SavedJob, norm_job: str, target_id: str) -> bool:
+    """True if a cached job corresponds to a user-provided job URL.
+
+    Matching is by canonical job id FIRST (so different URL variants of the same
+    offer — saved, recommended, search, share link — all resolve to the same
+    job), falling back to the historical URL-substring check.
+    """
+    if target_id and job.job_id and job.job_id == target_id:
+        return True
+    return norm_job in job.url or job.url in norm_job
+
+
+def _already_generated(job_url: str) -> dict | None:
+    """Look up the registry for a user-pasted job URL that already has a CV.
+    Returns the record (with cv_generated_at / cv_pdf_path) or None."""
+    target_id = _job_id_from_url(_normalize_job_url(job_url))
+    if not target_id:
+        return None
+    rec = _load_index().get(target_id)
+    if rec and rec.get("tailored"):
+        return rec
+    return None
+
+
 def cmd_tailor(args: argparse.Namespace) -> int:
     ensure_dirs()
+    _backfill_index()
     job_url = args.job or getattr(args, "job_url", None)
     jobs = _load_cached_jobs()
     if job_url:
+        # Auto-detection: if this offer (by canonical job id) already has a CV,
+        # tell the user instead of spending tokens regenerating it.
+        existing = _already_generated(job_url)
+        if existing and not args.force:
+            when = f" el {existing.get('cv_generated_at')}" if existing.get("cv_generated_at") else ""
+            where = f" en {existing.get('cv_pdf_path')}" if existing.get("cv_pdf_path") else ""
+            log.info(
+                "Ya generaste un CV para esta oferta%s%s — no la regenero. "
+                "Si querés rehacerlo, agregá --force.",
+                when, where,
+            )
+            return 0
         norm_job = _normalize_job_url(job_url)
-        jobs = [j for j in jobs if (norm_job in j.url or j.url in norm_job)]
+        target_id = _job_id_from_url(norm_job)
+        jobs = [j for j in jobs if _matches_job_url(j, norm_job, target_id)]
         if not jobs:
             log.error("no cached job matches --job %s", job_url)
             return 2
@@ -418,7 +715,21 @@ def cmd_tailor(args: argparse.Namespace) -> int:
 
 def cmd_all(args: argparse.Namespace) -> int:
     ensure_dirs()
+    _backfill_index()
     job_url = args.job or getattr(args, "job_url", None)
+    # Auto-detection: if the pasted URL resolves (by canonical job id) to an
+    # offer that already has a CV, don't even re-scrape it — unless --force.
+    if job_url and not args.force and not args.dry_run:
+        existing = _already_generated(job_url)
+        if existing:
+            when = f" el {existing.get('cv_generated_at')}" if existing.get("cv_generated_at") else ""
+            where = f" en {existing.get('cv_pdf_path')}" if existing.get("cv_pdf_path") else ""
+            log.info(
+                "Ya generaste un CV para esta oferta%s%s — no la regenero. "
+                "Si querés rehacerlo, agregá --force.",
+                when, where,
+            )
+            return 0
     jobs = do_extract(target_url=job_url, scraper_backend=args.scraper)
     if args.new:
         jobs = [j for j in jobs if not _is_processed(j)]

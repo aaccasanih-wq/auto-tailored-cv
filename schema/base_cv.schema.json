@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://auto-tailored-cv.example.com/schema/base_cv.schema.json",
+  "title": "base_cv.yaml — contrato de datos",
+  "type": "object",
+  "required": ["personal_info", "sections"],
+  "properties": {
+    "personal_info": {
+      "type": "object",
+      "required": ["name", "email"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "email": {"type": "string", "minLength": 1},
+        "phone": {"type": "string"},
+        "location": {"type": "string"},
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "url"],
+            "properties": {
+              "label": {"type": "string", "minLength": 1},
+              "url": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "summary": {"type": "string"},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "type"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "type": {"enum": ["entry_block", "simple_list", "text_block"]},
+          "reorderable": {"type": "boolean", "default": false},
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "heading": {"type": "string", "minLength": 1},
+                "subheading": {"type": "string"},
+                "location": {"type": "string"},
+                "dates": {"type": "string"},
+                "links": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["label", "url"],
+                    "properties": {
+                      "label": {"type": "string", "minLength": 1},
+                      "url": {"type": "string", "minLength": 1}
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "bullets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": {
+                      "text": {"type": "string", "minLength": 1},
+                      "tags": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1}
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text"],
+              "properties": {
+                "text": {"type": "string", "minLength": 1},
+                "tags": {
+                  "type": "array",
+                  "items": {"type": "string", "minLength": 1}
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "text": {"type": "string"}
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {"properties": {"type": {"const": "entry_block"}}, "required": ["type"]},
+            "then": {
+              "required": ["entries"],
+              "properties": {
+                "items": false,
+                "text": false
+              }
+            }
+          },
+          {
+            "if": {"properties": {"type": {"const": "simple_list"}}, "required": ["type"]},
+            "then": {
+              "required": ["items"],
+              "properties": {
+                "entries": false,
+                "text": false
+              }
+            }
+          },
+          {
+            "if": {"properties": {"type": {"const": "text_block"}}, "required": ["type"]},
+            "then": {
+              "required": ["text"],
+              "properties": {
+                "entries": false,
+                "items": false
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}
