@@ -44,7 +44,14 @@ Cuando el usuario pida generar, tailorizar, actualizar o revisar sus CVs para
 ofertas laborales de LinkedIn, ejecutá en bash desde la raíz del proyecto
 `auto-tailored-cv` (si no estás en ese directorio, hacé `cd` ahí primero):
 
-    python run.py all [--new] [--job <url>] [--force] [--limit N] [--dry-run] [--legacy-docx]
+    ./run.sh all [--new] [--job <url>] [--force] [--limit N] [--dry-run] [--legacy-docx]
+
+> **Entorno (IMPORTANTE):** usá SIEMPRE el wrapper `./run.sh`, NO `python run.py`.
+> `run.sh` auto-ejecuta `scripts/bootstrap.sh` solo cuando hace falta (venv
+> faltante, deps rotas, o playwright distinto al pineado `==1.60.0`) y agrega
+> `/usr/local/bin` al PATH para que `npx` funcione. Si `./run.sh` falla con
+> errores de módulos/path, corré `bash scripts/bootstrap.sh` manualmente y
+> mostrá su salida — nunca intentes "arreglar" pip/playwright a mano.
 
 Interpretá el pedido del usuario para armar los flags:
 
@@ -59,9 +66,9 @@ Interpretá el pedido del usuario para armar los flags:
   `--dry-run`
 - "solo N ofertas" / "los primeros N" → `--limit N`
 - "la última oferta (guardada)" / "la que guardé más recientemente" →
-  `python run.py extract` (fresco) y después `python run.py tailor --last 1`
+  `./run.sh extract` (fresco) y después `./run.sh tailor --last 1`
 - "las N últimas ofertas guardadas" / "las 6 que guardé hoy" →
-  `python run.py extract` y después `python run.py tailor --last N`
+  `./run.sh extract` y después `./run.sh tailor --last N`
 - "solo las pendientes de generar CV" → `--new`
 
 ### IMPORTANTE — "última oferta guardada" (regla anti-arbitrariedad)
@@ -72,11 +79,11 @@ cache viejo: `saved_at_iso` solo se llena en extracciones nuevas (parsea el
 fallback guarda el orden de listado `saved_order`, porque LinkedIn ordena la
 lista por más reciente primero). Por lo tanto:
 
-1. **SIEMPRE corré primero `python run.py extract`** para refrescar el cache
+1. **SIEMPRE corré primero `./run.sh extract`** para refrescar el cache
    con `saved_at_iso`/`saved_order` (sin esto, `--last N` elige en orden de
    archivo = arbitrario).
-2. Después usá `python run.py tailor --last N`.
-3. **Verificá con `--dry-run` primero** (`python run.py tailor --last N --dry-run`)
+2. Después usá `./run.sh tailor --last N`.
+3. **Verificá con `--dry-run` primero** (`./run.sh tailor --last N --dry-run`)
    y confirmá que el `[1/N]` que imprime es la oferta que el usuario quiere.
    No asumas ni adivines: la fecha/orden sale de los datos.
 4. Si `--last N` no te da la oferta esperada, el cache está desactualizado:
@@ -92,12 +99,12 @@ lista por más reciente primero). Por lo tanto:
 
 | Comando | Para qué sirve |
 |---|---|
-| `python run.py all [flags]` | Pipeline completo: extrae + tailoriza + renderiza PDF |
-| `python run.py extract [--job <url>]` | Solo scrapea LinkedIn → `jobs/*.json` |
-| `python run.py tailor [flags]` | Solo tailoriza jobs ya extraídos (sin scrape) |
-| `python run.py list` | Lista los `job_slug` disponibles para `review` |
-| `python run.py review <job_slug>` | Servidor local para editar el CV en el navegador |
-| `python run.py login` | Abre Chromium headed para loguearse en LinkedIn una vez |
+| `./run.sh all [flags]` | Pipeline completo: extrae + tailoriza + renderiza PDF |
+| `./run.sh extract [--job <url>]` | Solo scrapea LinkedIn → `jobs/*.json` |
+| `./run.sh tailor [flags]` | Solo tailoriza jobs ya extraídos (sin scrape) |
+| `./run.sh list` | Lista los `job_slug` disponibles para `review` |
+| `./run.sh review <job_slug>` | Servidor local para editar el CV en el navegador |
+| `./run.sh login` | Abre Chromium headed para loguearse en LinkedIn una vez |
 
 ## Pipeline (4 etapas)
 
@@ -146,14 +153,14 @@ El `job_slug` para `review` puede pasarse en cualquiera de estas formas:
 - `practicante-profesional-de-ia_canvia` (bare slug — busca por fecha)
 - `2026-07-23_practicante-profesional-de-ia_canvia` (legacy flat)
 
-Usá `python run.py list` para ver todos los `job_slug` disponibles.
+Usá `./run.sh list` para ver todos los `job_slug` disponibles.
 
 ## Revisión editable
 
 Si el usuario quiere revisar/editar un CV antes del PDF final, o dice que no
 le convenció el resultado para un puesto específico, corré:
 
-    python run.py review <job_slug>
+    ./run.sh review <job_slug>
 
 Eso levanta un servidor local en `localhost:8420` (configurable via `.env`)
 y abre el navegador con el `cv.html` editable. El botón "Guardar y generar
@@ -163,7 +170,7 @@ PDF" sobreescribe el HTML y regenera el PDF en vivo.
 
 Si el usuario pregunta qué CVs ya generó o cuáles puede revisar, corré:
 
-    python run.py list
+    ./run.sh list
 
 Cada fila es un `job_slug` válido para `review`.
 
@@ -182,7 +189,7 @@ Ejemplo de mensaje final:
 > - output/2026-07-23/practicante-profesional-de-ia_canvia/cv.pdf
 >
 > Algo no te convence? Editá en el navegador con
-> `python run.py review 2026-07-23/practicante-profesional-de-ia_canvia`.
+> `./run.sh review 2026-07-23/practicante-profesional-de-ia_canvia`.
 
 ## Modelos y residencia de datos
 
@@ -201,5 +208,7 @@ Ejemplo de mensaje final:
 - `.env` con `LLM_API_KEY` válida.
 - `.playwright-profile/` con sesión de LinkedIn ya logueada (si el
   scraper devuelve login-wall, decile al usuario que corra
-  `python run.py login` una vez y se loguee manualmente).
-- Playwright Chromium instalado: `python3 -m playwright install chromium`.
+  `./run.sh login` una vez y se loguee manualmente).
+- Playwright Chromium instalado: el wrapper `./run.sh` / `scripts/bootstrap.sh`
+  lo descargan automáticamente con la versión pineada (`playwright==1.60.0`,
+  la última compatible con macOS 12). No lo instales a mano.

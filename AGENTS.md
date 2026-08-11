@@ -17,18 +17,24 @@ extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  rende
 ## Commands you should run before declaring a task done
 
 - `pytest tests/ -v` — must be 100% passing.
-- `python3 run.py --help` — smoke check the CLI doesn't crash.
-- `python3 run.py tailor --dry-run` — runs the cache logic without LLM calls
+- `./run.sh --help` — smoke check the CLI doesn't crash.
+- `./run.sh tailor --dry-run` — runs the cache logic without LLM calls
   (will report "no saved jobs" if Playwright MCP isn't connected, which is fine).
-- `python3 run.py tailor <url> --dry-run` — confirms the positional URL alias
+- `./run.sh tailor <url> --dry-run` — confirms the positional URL alias
   resolves to exactly ONE job from `jobs/` (count the dry-run rows!).
-- `python3 scripts/validate_base_cv.py input/base_cv.yaml` — after any change
+- `./run.sh` and `scripts/bootstrap.sh` — idempotent env setup. Always invoke
+  the pipeline through `./run.sh`, NOT bare `python run.py`: the wrapper
+  auto-bootstraps the venv (`.venv/bin/python`) when deps are missing and
+  prepends `/usr/local/bin:/opt/homebrew/bin` to PATH so `npx` (Playwright MCP)
+  is reachable. Playwright is pinned to `==1.60.0` in `requirements.txt`
+  (chromium 1223, the last build supporting macOS 12) — do NOT upgrade it.
+- `.venv/bin/python scripts/validate_base_cv.py input/base_cv.yaml` — after any change
   to the user's base CV, confirm it still validates against the schema.
 
 ## Hard rules — CLI scope (avoids accidental bulk re-tailorization)
 
 - `tailor` and `all` accept a **positional URL** as alias for `--job`:
-  `python run.py tailor https://www.linkedin.com/jobs/view/123/ --force` —
+  `./run.sh tailor https://www.linkedin.com/jobs/view/123/ --force` —
   This targets exactly ONE cached job and NEVER triggers the bulk-confirm
   prompt. This is the **safest form to use from an LLM agent**: always include
   the URL (positional or via `--job`) when the user asked for a single offer.
@@ -202,7 +208,7 @@ Voluntariado → `entry_block`; Habilidades / Idiomas / Herramientas / Premios �
 - `src/render/legacy/docx_writer.py` + `pdf_converter.py` — legacy docx +
   LibreOffice path behind `--legacy-docx`. Requires a `base_cv.docx` template
   (does NOT work with the YAML base CV); backwards compat only.
-- `src/review/server.py` — FastAPI app for `python run.py review <slug>`.
+- `src/review/server.py` — FastAPI app for `./run.sh review <slug>`.
   `GET /` serves `cv.html`, `POST /save` overwrites it + kicks off PDF regen
   in a background thread. The save button is hidden in `@media print`.
 - `run.py` — CLI. Subcommands: `all`, `extract`, `tailor`, `review`, `login`,
@@ -299,7 +305,7 @@ warning.
 ## Pipeline state (local machine)
 
 - LinkedIn session is persisted in `.playwright-profile/` (headed login done
-  once via `python run.py login`). Subsequent runs are headless and the
+  once via `./run.sh login`). Subsequent runs are headless and the
   scraper reuses the cookies.
 - `jobs/` holds the user's cached LinkedIn jobs. Each job's JSON has a
   `tailored: true|false` flag and the `tailor --new` flag uses it to skip
@@ -316,7 +322,7 @@ warning.
 - `.claude/skills/cv_automatizacion.md` — auto-loaded by Claude Desktop and
   Claude Code when opened in the project root. The skill teaches the
   assistant to translate natural-language requests like "generá el CV para
-  la oferta `<url>`" into `python run.py all --job <url> --force`, and to
+  la oferta `<url>`" into `./run.sh all --job <url> --force`, and to
   handle "convertime mi CV a base_cv.yaml" / "generá mi CV base a partir de
   este PDF" as a supported task.
 - `.opencode/command/cv_automatizacion.md` — same content, exposed as the
