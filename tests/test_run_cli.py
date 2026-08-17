@@ -16,10 +16,12 @@ import pytest
 import run as run_module
 from run import (
     _already_generated,
+    _derive_title_from_description,
     _is_processed,
     _job_cache_path,
     _load_cached_jobs,
     _load_index,
+    _manual_job,
     _save_job_cache,
     _tailor_one,
     _upsert_job_cache,
@@ -564,6 +566,67 @@ class TestRepairFiltering:
         assert not (out / "analysis_repaired.json").exists()
         # Only 3 LLM calls: summarize + tailor + evaluate (no repair).
         assert len(stub.calls) == 3
+
+
+class TestManualOffer:
+    """The `manual` command tailors a CV from a pasted (non-LinkedIn) offer."""
+
+    def test_manual_job_has_synthetic_stable_id(self):
+        job = _manual_job("Data Engineer", "Falabella", "Lima",
+                          "Buscamos Data Engineer con Python y SQL.")
+        assert job.job_id == "manual-data-engineer-falabella"
+        assert job.url == "manual://manual-data-engineer-falabella"
+        assert job.title == "Data Engineer"
+        assert job.company == "Falabella"
+
+    def test_manual_job_slug_fallback(self):
+        job = _manual_job("", "", "", "descripción")
+        assert job.job_id.startswith("manual-")
+        assert "untitled" in job.job_id
+
+    def test_derive_title_from_description(self):
+        desc = "# Data Engineer Senior\n\nBuscamos ..."
+        assert _derive_title_from_description(desc) == "Data Engineer Senior"
+
+    def test_derive_title_skips_empty_and_heading(self):
+        assert _derive_title_from_description("\n\n") == "Oferta laboral"
+        assert _derive_title_from_description("## \nTítulo real") == "Título real"
+
+    def test_manual_dry_run_creates_no_side_effects(self, output_dir):
+        job = _manual_job("Data Engineer", "Falabella", "Lima", "Buscamos Python.")
+        out = _tailor_one(client=None, base_profile=_base_profile(), job=job, dry_run=True)
+        assert out is not None
+        assert not out.exists()
+
+    def test_manual_full_run_tailors(self, output_dir):
+        stub = StubLLMClient([
+            llm_response(_valid_job_summary()),
+            llm_response(_valid_tailored_json()),
+            llm_response(json.dumps({"issues": [], "overall_verdict": "pass",
+                                     "summary": "ok"})),
+        ])
+        job = _manual_job("Data Engineer", "Falabella", "Lima", "Buscamos Python y SQL.")
+        out = _tailor_one(client=stub, base_profile=_base_profile(), job=job, dry_run=False)
+        assert out is not None
+        assert (out / "analysis.json").exists()
+        assert (out / "job_description.txt").exists()
+
+    def test_manual_parser(self):
+        p = run_module.build_parser()
+        args = p.parse_args([
+            "manual", "--title", "Data Engineer", "--company", "Falabella",
+            "--description", "Buscamos Python.", "--dry-run",
+        ])
+        assert args.cmd == "manual"
+        assert args.title == "Data Engineer"
+        assert args.company == "Falabella"
+        assert args.description == "Buscamos Python."
+        assert args.dry_run is True
+
+    def test_manual_parser_description_file(self):
+        p = run_module.build_parser()
+        args = p.parse_args(["manual", "--description-file", "offer.txt"])
+        assert args.description_file == "offer.txt"
 
 
 class TestBulkConfirmGuard:

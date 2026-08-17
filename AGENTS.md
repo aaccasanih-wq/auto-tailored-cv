@@ -211,13 +211,20 @@ Voluntariado → `entry_block`; Habilidades / Idiomas / Herramientas / Premios �
 - `src/review/server.py` — FastAPI app for `./run.sh review <slug>`.
   `GET /` serves `cv.html`, `POST /save` overwrites it + kicks off PDF regen
   in a background thread. The save button is hidden in `@media print`.
-- `run.py` — CLI. Subcommands: `all`, `extract`, `tailor`, `review`, `login`,
-  `list`. Flags: `--new`, `--force`, `--job <url>`, positional `<url>` (alias
-  for `--job`), `--dry-run`, `--limit N`, `--yes`, `--scraper playwright|browsermcp`,
-  `--legacy-docx`. Loads user preferences once per run and passes them to the
-  three prompt builders. When `settings.enable_evaluation` is false it skips
-  evaluate/repair entirely. Prints each generated `cv.pdf` path + a reminder
-  that `review <slug>` is available.
+- `run.py` — CLI. Subcommands: `all`, `extract`, `tailor`, `manual`, `review`,
+  `login`, `list`. Flags: `--new`, `--force`, `--job <url>`, positional `<url>`
+  (alias for `--job`), `--dry-run`, `--limit N`, `--yes`,
+  `--scraper playwright|browsermcp`, `--legacy-docx`. Loads user preferences once
+  per run and passes them to the three prompt builders. When
+  `settings.enable_evaluation` is false it skips evaluate/repair entirely.
+  Prints each generated `cv.pdf` path + a reminder that `review <slug>` is
+  available.
+- `manual` tailors a CV from a PASTED (non-LinkedIn) job offer. Description
+  comes from `--description <text>`, `--description-file <path>`, or piped
+  stdin. `--title`/`--company` are optional (title is derived from the first
+  line of the description; company defaults to "empresa"). It builds a
+  synthetic stable job id (`manual-<title>-<company>`) so repeated runs dedup
+  against `jobs/` without ever colliding with a real LinkedIn job id.
 
 ## analysis.json schema (the contract)
 

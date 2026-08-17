@@ -14,6 +14,8 @@ Usage:
     python run.py all --scraper playwright    # default; Playwright MCP
     python run.py all --scraper browsermcp     # legacy fallback; Browser MCP
     python run.py all --legacy-docx   # render via docx_writer + LibreOffice
+    python run.py manual --title "Data Engineer" --company "Acme" \
+        --description-file offer.txt  # tailor from a pasted (non-LinkedIn) offer
 
 Safety: when `all` or `tailor` (without --dry-run) would target MORE THAN ONE
 job and `--force` is set, the CLI prompts `Apply to N jobs? [y/N]` on stdin.
@@ -52,7 +54,7 @@ from src.tailor.llm_client import make_client
 from src.tailor.prompts import JobInfo
 from src.tailor.repair import repair_cv, save_repaired_json
 from src.utils.logging import configure_logging, get_logger
-from src.utils.slugify import job_output_path
+from src.utils.slugify import job_output_path, slugify
 
 log = get_logger(__name__)
 
@@ -353,6 +355,47 @@ def do_extract(
 def _resolve_job_folder(job: SavedJob) -> Path:
     return job_output_path(
         settings.output_dir, job.title, job.company or "company",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# "Manual" (pasted, non-LinkedIn) job offers                                   #
+# --------------------------------------------------------------------------- #
+
+
+def _derive_title_from_description(description: str) -> str:
+    """Derive a job title from the first non-empty, non-heading line of a pasted
+    offer description (so `manual` works even without --title)."""
+    for line in (description or "").splitlines():
+        s = line.strip().lstrip("#").strip()
+        if s:
+            return s[:80]
+    return "Oferta laboral"
+
+
+def _manual_job(
+    title: str,
+    company: str,
+    location: str,
+    description: str,
+) -> SavedJob:
+    """Build a SavedJob from a pasted (non-LinkedIn) job offer.
+
+    Uses a synthetic stable id (``manual-<title>-<company>``) so repeated runs
+    of the same pasted offer dedup against the jobs/ cache just like LinkedIn
+    jobs, without ever colliding with a real LinkedIn job id.
+    """
+    sid = slugify(title) or "oferta"
+    cid = slugify(company) or "empresa"
+    key = f"manual-{sid}-{cid}"
+    return SavedJob(
+        title=title,
+        url=f"manual://{key}",
+        company=company,
+        location=location,
+        saved_at_iso=_now_iso(),
+        description=description,
+        job_id=key,
     )
 
 
@@ -777,6 +820,50 @@ def cmd_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_manual(args: argparse.Namespace) -> int:
+    """Tailor a CV from a PASTED (non-LinkedIn) job offer.
+
+    The description comes from `--description <text>`, `--description-file
+    <path>`, or stdin (piped). `--title`/`--company` are optional; when missing
+    the title is derived from the first line of the description and the company
+    defaults to "empresa". Runs the same summarize → tailor → evaluate → repair
+    → render pipeline as `tailor`, without scraping LinkedIn.
+    """
+    ensure_dirs()
+    _backfill_index()
+
+    description = ""
+    if getattr(args, "description", None):
+        description = args.description.strip()
+    elif getattr(args, "description_file", None):
+        p = Path(args.description_file)
+        if not p.exists():
+            log.error("--description-file no encontrado: %s", args.description_file)
+            return 2
+        description = p.read_text(encoding="utf-8").strip()
+    else:
+        # Piped stdin (e.g. `./run.sh manual --title ... < offer.txt`).
+        if not sys.stdin.isatty():
+            description = sys.stdin.read().strip()
+    if not description:
+        log.error(
+            "no se recibió una descripción de oferta. Usá --description \"...\", "
+            "--description-file <path>, o pipeá el texto por stdin."
+        )
+        return 2
+
+    title = (getattr(args, "title", "") or "").strip() or _derive_title_from_description(description)
+    company = (getattr(args, "company", "") or "").strip() or "empresa"
+    location = (getattr(args, "location", "") or "").strip()
+
+    job = _manual_job(title, company, location, description)
+    outputs = do_tailor(
+        [job], dry_run=args.dry_run, force=args.force, legacy_docx=args.legacy_docx,
+    )
+    log.info("produced %d tailored CV(s)", len(outputs))
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     ensure_dirs()
     from src.review.server import run_server
@@ -1009,6 +1096,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_tailor = sub.add_parser("tailor", help="tailor already-extracted jobs only")
     add_common(p_tailor)
     p_tailor.set_defaults(func=cmd_tailor)
+
+    p_manual = sub.add_parser(
+        "manual",
+        help="tailor a CV from a pasted (non-LinkedIn) job offer",
+    )
+    p_manual.add_argument("--title", default=None, help="job title (optional; derived from text if omitted)")
+    p_manual.add_argument("--company", default=None, help="company name (optional; 'empresa' if omitted)")
+    p_manual.add_argument("--location", default=None, help="job location (optional)")
+    p_manual.add_argument("--description", default=None, help="raw job description text (inline)")
+    p_manual.add_argument("--description-file", metavar="PATH", default=None,
+                          help="path to a .txt file with the job description")
+    p_manual.add_argument("--dry-run", action="store_true",
+                          help="show what would be processed without calling the LLM")
+    p_manual.add_argument("--force", action="store_true",
+                          help="re-process even if already processed")
+    p_manual.add_argument("--legacy-docx", action="store_true",
+                          help="render via the legacy docx + LibreOffice path")
+    p_manual.set_defaults(func=cmd_manual)
 
     p_review = sub.add_parser("review", help="serve cv.html for a job and edit it in place")
     p_review.add_argument("job_slug", help="folder name under output/ (the job slug)")

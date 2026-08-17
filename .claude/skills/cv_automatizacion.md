@@ -5,6 +5,21 @@ description: Genera, tailoriza, actualiza o revisa CVs en PDF para ofertas labor
 
 # cv_automatizacion — skill para Claude Code / Opencode
 
+## ⚠️ LEER PRIMERO — acceso a herramientas y entorno
+
+- **Tenés acceso a herramientas de shell/bash para ejecutar comandos en la
+  laptop del usuario.** En Claude Desktop esto se habilita vía el conector
+  **Desktop Commander**; en Claude Code / Opencode ya tenés la tool Bash/Shell.
+  **Usalas directamente** para correr este pipeline — no dudes, no pidas
+  permiso y no asumas que no tenés acceso: es la única forma de generar el CV.
+- **El proyecto vive en** `/Users/axelaaronccasanihuachua/Desktop/Data_Science/auto-tailored-cv`.
+  Antes de correr cualquier comando, `cd` a ese directorio (Desktop Commander
+  suele arrancar en otra carpeta). Verificá que estás ahí con `ls run.sh`.
+- **El virtualenv YA existe** en `.venv/` con todas las dependencias instaladas
+  (playwright 1.60.0 pineado para macOS 12). NO lo crees desde cero: usá el
+  wrapper `./run.sh`, que lo levanta solo y, si hiciera falta, corre
+  `scripts/bootstrap.sh` para rearmarlo de forma idempotente.
+
 ## Conversión de tu CV actual (PDF/Word/texto) → `input/base_cv.yaml`
 
 Cuando el usuario pida **"convertime mi CV a base_cv.yaml"**, **"generá mi CV
@@ -70,6 +85,9 @@ Interpretá el pedido del usuario para armar los flags:
 - "las N últimas ofertas guardadas" / "las 6 que guardé hoy" →
   `./run.sh extract` y después `./run.sh tailor --last N`
 - "solo las pendientes de generar CV" → `--new`
+- **"generá el CV para estas indicaciones/descripción de esta oferta"** (texto
+  pegado de otra plataforma, NO un link de LinkedIn) → usá el subcomando
+  `manual`. Ver la sección "Oferta pegada (no LinkedIn)" más abajo.
 
 ### IMPORTANTE — "última oferta guardada" (regla anti-arbitrariedad)
 
@@ -102,6 +120,7 @@ lista por más reciente primero). Por lo tanto:
 | `./run.sh all [flags]` | Pipeline completo: extrae + tailoriza + renderiza PDF |
 | `./run.sh extract [--job <url>]` | Solo scrapea LinkedIn → `jobs/*.json` |
 | `./run.sh tailor [flags]` | Solo tailoriza jobs ya extraídos (sin scrape) |
+| `./run.sh manual [--description ...]` | Tailoriza desde una descripción de oferta pegada (no LinkedIn) |
 | `./run.sh list` | Lista los `job_slug` disponibles para `review` |
 | `./run.sh review <job_slug>` | Servidor local para editar el CV en el navegador |
 | `./run.sh login` | Abre Chromium headed para loguearse en LinkedIn una vez |
@@ -131,6 +150,48 @@ lista por más reciente primero). Por lo tanto:
 
 Cada corrida es incremental: los jobs ya tailorizados se saltean a menos que
 pases `--force`.
+
+## Oferta pegada (no LinkedIn) — comando `manual`
+
+Cuando el usuario pegue la descripción/indicaciones de una oferta publicada en
+**otra plataforma** (no un link de LinkedIn), NO uses `extract` ni `tailor`
+(esos dependen del scrape de LinkedIn). Usá el subcomando `manual`:
+
+    ./run.sh manual --title "Data Engineer" --company "Acme" \
+        --description-file /tmp/oferta.txt --force
+
+El texto de la oferta puede llegar por tres vías (en orden de preferencia):
+1. **`--description-file <path>`** — escribí la descripción a un archivo (p.ej.
+   con `cat > /tmp/oferta.txt <<'EOF' … EOF`) y pasá la ruta. Ideal para textos largos.
+2. **`--description "<texto>"`** — inline para textos cortos.
+3. **stdin** — `./run.sh manual --title "…" --company "…" < /tmp/oferta.txt`.
+
+`--title` y `--company` son opcionales: si faltan, el título se deriva de la
+primera línea del texto y la empresa queda como "empresa". Usalos cuando puedas
+para que el nombre de la carpeta de output sea legible. Este subcomando corre el
+mismo pipeline (summarize → tailor → evaluate → repair → render) que `tailor`,
+pero sin scrapear LinkedIn.
+
+## Cómo editar el CV a mano (sin correr ningún pipeline)
+
+La fuente editable **no es el PDF** — es el `cv.html` que vive en la carpeta de
+output de cada oferta (`output/<fecha>/<slug>/cv.html`). El PDF es solo su
+impresión. Hay tres formas de tocar el resultado:
+
+- **A. Editar como un .txt (cero comandos):** abrí `cv.html` con cualquier
+  editor (VS Code, TextEdit…), cambiá el texto entre etiquetas y guardá. Para
+  regenerar el PDF, abrí ese `cv.html` en el navegador (doble clic) y presioná
+  **Cmd+P → Guardar como PDF** (el CSS está copiado al lado y el botón de
+  revisión se oculta en la impresión).
+- **B. Editar directo en el navegador (cero comandos):** doble clic en `cv.html`
+  → los campos son editables inline (`contenteditable`) → Cmd+P → Guardar como PDF.
+- **C. Flujo con auto-guardado (un comando):** `./run.sh review <job_slug>` abre
+  `localhost:8420`; editás en el navegador y el botón "Guardar y generar PDF"
+  re-escribe el HTML y regenera el PDF solo.
+
+Si el usuario dice "editá el CV" sin más, lo más simple es decirle que abra el
+`cv.html` (o usar `review` si prefiere el auto-guardado). No hace falta que vos
+reescribas el HTML salvo que el usuario lo pida.
 
 ## Estructura de carpetas de output
 
