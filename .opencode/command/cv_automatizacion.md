@@ -68,6 +68,17 @@ ofertas laborales de LinkedIn, ejecutá en bash desde la raíz del proyecto
 > errores de módulos/path, corré `bash scripts/bootstrap.sh` manualmente y
 > mostrá su salida — nunca intentes "arreglar" pip/playwright a mano.
 
+### Camino rápido para empleos guardados
+
+Si el pedido es simplemente "generá los CV para mis empleos guardados", ejecutá
+`./run.sh all` directamente. No inspecciones ni cuentes primero `jobs/`:
+`jobs/` y `jobs/_index.json` son caches históricos y conservan ofertas que el
+usuario ya desguardó. El primer `extract` de `all` es la única fuente de verdad
+del número y alcance actual de LinkedIn. Al terminar, informá las rutas de los
+`cv.pdf` generados. Si un job falla por una respuesta inválida del proveedor
+LLM, reintentá esa oferta una vez; si vuelve a fallar, reportá el error al
+usuario en vez de entrar a depurar o reescribir los scripts del proyecto.
+
 `URL` es un **argumento posicional opcional** y alias de `--job <url>`. Los
 dos comandos siguientes son equivalentes:
 

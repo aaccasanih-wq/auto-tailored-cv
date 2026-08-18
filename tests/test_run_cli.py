@@ -268,7 +268,7 @@ class TestTailorOne:
         assert not (out / "job_description.txt").exists()
         assert not (out / "analysis.json").exists()
 
-    def test_full_run_produces_analysis_and_evaluation(self, output_dir):
+    def test_full_run_produces_analysis_and_evaluation(self, output_dir, jobs_dir):
         """Full run with stubbed LLM + patched HTML/PDF renderer."""
         stub = StubLLMClient([
             llm_response(_valid_job_summary()),          # 1: summarize
@@ -286,7 +286,7 @@ class TestTailorOne:
         # No repaired file when verdict is pass
         assert not (out / "analysis_repaired.json").exists()
 
-    def test_job_summary_is_cached_not_recomputed(self, output_dir):
+    def test_job_summary_is_cached_not_recomputed(self, output_dir, jobs_dir):
         """A cached job_summary.json is reused — the summarize LLM call is
         skipped (only tailor + evaluate run)."""
         stub = StubLLMClient([
@@ -303,7 +303,7 @@ class TestTailorOne:
         _tailor_one(client=stub, base_profile=_base_profile(), job=job, dry_run=False)
         assert len(stub.calls) == 2  # no summarize call
 
-    def test_force_recomputes_job_summary(self, output_dir):
+    def test_force_recomputes_job_summary(self, output_dir, jobs_dir):
         """With --force, even a cached summary is recomputed."""
         stub = StubLLMClient([
             llm_response(_valid_job_summary()),
@@ -321,7 +321,7 @@ class TestTailorOne:
                     dry_run=False, force=True)
         assert len(stub.calls) == 3  # summarize recomputed
 
-    def test_repair_pass_writes_repaired_json(self, output_dir):
+    def test_repair_pass_writes_repaired_json(self, output_dir, jobs_dir):
         stub = StubLLMClient([
             llm_response(_valid_job_summary()),
             llm_response(_valid_tailored_json()),
@@ -339,14 +339,17 @@ class TestTailorOne:
                          job=_make_job(), dry_run=False)
         assert (out / "analysis_repaired.json").exists()
 
-    def test_tailored_with_no_sections_is_failure(self, output_dir):
+    def test_tailored_with_no_sections_is_failure(self, output_dir, jobs_dir):
         bad = json.dumps({"summary": "x", "sections": []})
-        stub = StubLLMClient([llm_response(_valid_job_summary()), llm_response(bad)])
+        stub = StubLLMClient([
+            llm_response(_valid_job_summary()),
+            llm_response(bad), llm_response(bad), llm_response(bad),
+        ])
         result = _tailor_one(client=stub, base_profile=_base_profile(),
                               job=_make_job(), dry_run=False)
         assert result is None
 
-    def test_evaluation_disabled_skips_evaluate(self, output_dir):
+    def test_evaluation_disabled_skips_evaluate(self, output_dir, jobs_dir):
         """ENABLE_EVALUATION=false: only summarize + tailor are called; no
         evaluate/repair, and a cv.pdf is still produced (renderer is patched
         here, so we assert no evaluation.json is written)."""
@@ -540,7 +543,7 @@ class TestListCommand:
 class TestRepairFiltering:
     """The url_tampered-only case should NOT trigger a repair LLM call."""
 
-    def test_only_url_tampered_skips_repair(self, output_dir):
+    def test_only_url_tampered_skips_repair(self, output_dir, jobs_dir):
         canned_eval = json.dumps({
             "issues": [
                 {"id": "1", "type": "url_tampered", "severity": "high",
@@ -598,7 +601,7 @@ class TestManualOffer:
         assert out is not None
         assert not out.exists()
 
-    def test_manual_full_run_tailors(self, output_dir):
+    def test_manual_full_run_tailors(self, output_dir, jobs_dir):
         stub = StubLLMClient([
             llm_response(_valid_job_summary()),
             llm_response(_valid_tailored_json()),

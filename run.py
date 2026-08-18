@@ -348,7 +348,11 @@ def do_extract(
         # _upsert_job_cache) instead of resetting tailored=False on every run.
         _upsert_job_cache(job)
     save_jobs_json(jobs, settings.jobs_dir / "_all_saved_jobs.json")
-    log.info("extracted %d saved jobs", len(jobs))
+    historical_count = len(list(settings.jobs_dir.glob("*.json")))
+    log.info(
+        "LinkedIn currently returned %d saved jobs; local cache contains %d historical records",
+        len(jobs), historical_count,
+    )
     return jobs
 
 

@@ -396,6 +396,49 @@ class TestTailorCV:
         result = tailor_cv(stub, _base_cv(), _job())
         assert result.tailored_json["summary"].startswith("Perfil orientada")
 
+    def test_unwraps_backend_junk_envelope(self):
+        """Some backends wrap the real payload: {" .json": "<json string>"}."""
+        inner = _json(_valid_tailored())
+        wrapped = _json({".json": inner})
+        stub = StubLLMClient([llm_response(wrapped)])
+        result = tailor_cv(stub, _base_cv(), _job())
+        assert result.tailored_json["summary"].startswith("Perfil orientada")
+        assert result.shape_warnings == []
+
+    def test_ignores_junk_keys_alongside_payload(self):
+        """Stray junk keys (e.g. `/**/`) must not break parsing/validation."""
+        valid = json.loads(_json(_valid_tailored()))
+        valid["/**/"] = "json"
+        stub = StubLLMClient([llm_response(_json(valid))])
+        result = tailor_cv(stub, _base_cv(), _job())
+        assert result.tailored_json["summary"].startswith("Perfil orientada")
+        assert result.shape_warnings == []
+
+    def test_normalizes_leading_slash_keys(self):
+        valid = _valid_tailored()
+        slash_keys = json.loads(_json(valid))
+
+        def slashify(value):
+            if isinstance(value, dict):
+                return {"/" + key: slashify(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [slashify(item) for item in value]
+            return value
+
+        stub = StubLLMClient([llm_response(_json(slashify(slash_keys)))])
+        result = tailor_cv(stub, _base_cv(), _job())
+        assert result.tailored_json["summary"].startswith("Perfil orientada")
+        assert result.shape_warnings == []
+
+    def test_retries_empty_provider_response(self):
+        stub = StubLLMClient([
+            llm_response("{}"),
+            llm_response(_json(_valid_tailored())),
+        ])
+        result = tailor_cv(stub, _base_cv(), _job())
+        assert len(stub.calls) == 2
+        assert result.tailored_json["sections"]
+
     def test_records_shape_warnings_on_bad_output(self):
         bad = _json({
             "summary": "x",

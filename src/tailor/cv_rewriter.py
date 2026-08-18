@@ -70,20 +70,48 @@ def tailor_cv(
     model = model or settings.llm_model_tailor
     system, user = build_tailor_prompt(base_cv, job, user_preferences)
     log.info("tailor: model=%s job=%s/%s", model, job.company, job.title)
-    response = client.chat(
-        model=model, system=system, user=user, json_mode=True, temperature=temperature,
-        tag="tailor",
-    )
-    tailored = _parse_json_loose(response.content)
-    warnings = _validate_shape(tailored, base_cv)
-    if warnings:
-        log.warning("tailor produced %d shape warning(s): %s", len(warnings), warnings[:3])
-    _reinject_links(tailored, base_cv)
-    return TailorResult(tailored_json=tailored, raw_response=response, shape_warnings=warnings)
+    last_result: TailorResult | None = None
+    for attempt in range(1, 4):
+        response = client.chat(
+            model=model,
+            system=system,
+            user=user if attempt == 1 else (
+                user + "\n\nIMPORTANT: The previous response was incomplete. "
+                "Return the complete JSON object now, including a non-empty "
+                "`sections` array. Do not return `{}`, a status message, or an envelope."
+            ),
+            json_mode=True,
+            temperature=temperature,
+            tag="tailor" if attempt == 1 else f"tailor_retry_{attempt}",
+        )
+        tailored = _parse_json_loose(response.content)
+        warnings = _validate_shape(tailored, base_cv)
+        if warnings:
+            log.warning("tailor produced %d shape warning(s): %s", len(warnings), warnings[:3])
+        _reinject_links(tailored, base_cv)
+        last_result = TailorResult(
+            tailored_json=tailored, raw_response=response, shape_warnings=warnings,
+        )
+        if isinstance(tailored.get("sections"), list) and tailored["sections"]:
+            return last_result
+        if attempt < 3:
+            log.warning(
+                "tailor attempt %d returned no sections for %s; retrying",
+                attempt, job.title,
+            )
+    log.error("tailor returned no sections after 3 attempts for %s", job.title)
+    return last_result  # type: ignore[return-value]
 
 
 def _parse_json_loose(content: str) -> dict[str, Any]:
-    """Parse JSON; if fenced in a markdown ``` block, strip the fence first."""
+    """Parse JSON; if fenced in a markdown ``` block, strip the fence first.
+
+    Some OpenAI-compatible backends (e.g. the OpenCode "go" tier) occasionally
+    wrap the real payload in a junk envelope like `{" .json": "<json string>"}`
+    or inject junk keys (e.g. `/**/`) alongside it. The envelope is unwrapped
+    here (up to 2 levels deep); stray junk keys are harmless because validation
+    only reads `sections`/`summary`.
+    """
     text = content.strip()
     if text.startswith("```"):
         first_newline = text.find("\n")
@@ -92,7 +120,39 @@ def _parse_json_loose(content: str) -> dict[str, Any]:
         if text.endswith("```"):
             text = text[: -3]
         text = text.strip()
-    return json.loads(text)
+    parsed = json.loads(text)
+    for _ in range(2):
+        if not isinstance(parsed, dict):
+            break
+        if parsed.get("sections") is not None or parsed.get("summary") is not None:
+            break
+        unwrapped = None
+        for value in parsed.values():
+            if not isinstance(value, str):
+                continue
+            try:
+                candidate = json.loads(value.strip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                unwrapped = candidate
+                break
+        if unwrapped is None:
+            break
+        parsed = unwrapped
+    return _normalize_json_keys(parsed)
+
+
+def _normalize_json_keys(value: Any) -> Any:
+    """Normalize provider quirks such as `/sections` and `/summary` keys."""
+    if isinstance(value, dict):
+        return {
+            (key.lstrip("/") if isinstance(key, str) else key): _normalize_json_keys(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_json_keys(item) for item in value]
+    return value
 
 
 # --------------------------------------------------------------------------- #

@@ -632,6 +632,62 @@ async def _try_click_see_more(
         return False
 
 
+async def _collect_saved_job_listing(
+    client: StdioMcpClient,
+    initial_snapshot: str,
+    tool_names: list[str],
+) -> tuple[list[str], dict[str, str]]:
+    """Collect saved-job cards across LinkedIn's lazy-loaded listing.
+
+    The first snapshot can contain only the cards currently rendered in the
+    viewport. Scroll until two consecutive snapshots add no URLs, with a hard
+    cap so a broken infinite-scroll page cannot hang the extraction.
+    """
+    urls: dict[str, None] = {}
+    saved_times: dict[str, str] = {}
+    snapshot = initial_snapshot
+    stable_rounds = 0
+
+    for round_number in range(12):
+        before = len(urls)
+        for url in _extract_job_urls(snapshot):
+            urls.setdefault(url, None)
+        saved_times.update(_extract_saved_times(snapshot))
+        added = len(urls) - before
+        log.debug(
+            "saved-jobs listing round %d: +%d URL(s), total=%d",
+            round_number + 1, added, len(urls),
+        )
+        if added == 0:
+            stable_rounds += 1
+        else:
+            stable_rounds = 0
+        if stable_rounds >= 2:
+            break
+        if "browser_evaluate" not in tool_names:
+            if round_number == 0:
+                log.info(
+                    "browser_evaluate unavailable; using the initial saved-jobs snapshot"
+                )
+            break
+        try:
+            await client.call_tool(
+                "browser_evaluate",
+                {
+                    "function": "() => { window.scrollTo(0, document.body.scrollHeight); return true; }",
+                },
+                timeout_s=30,
+            )
+            await asyncio.sleep(1.5)
+            snapshot = extract_text_content(
+                await client.call_tool("browser_snapshot", {}, timeout_s=60)
+            )
+        except Exception as e:
+            log.warning("could not paginate saved-jobs listing: %s", str(e)[:160])
+            break
+    return list(urls), saved_times
+
+
 async def _navigate_and_wait(
     client: StdioMcpClient,
     url: str,
@@ -930,10 +986,11 @@ async def extract_saved_jobs(
                 )
                 return []
             log.info("login detectado — continuando con el scraping...")
-        job_urls = _extract_job_urls(list_snapshot)
-        log.info("found %d saved-job URLs in snapshot", len(job_urls))
+        job_urls, saved_times = await _collect_saved_job_listing(
+            client, list_snapshot, tool_names,
+        )
+        log.info("found %d saved-job URLs in listing", len(job_urls))
         # Best-effort saved-at timestamps from the "Guardado hace X ..." labels.
-        saved_times = _extract_saved_times(list_snapshot)
         if saved_times:
             log.info("parsed saved-at timestamps for %d job(s)", len(saved_times))
 

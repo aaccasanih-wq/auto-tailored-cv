@@ -33,6 +33,13 @@ extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  rende
 
 ## Hard rules — CLI scope (avoids accidental bulk re-tailorization)
 
+- **Current saved-job count comes only from a fresh `extract`**. `jobs/` and
+  `jobs/_index.json` are historical caches: jobs that the user unsaves remain
+  there for deduplication and prior outputs. Never describe the cache count as
+  the number of jobs currently saved on LinkedIn. For a plain request to
+  generate CVs for saved jobs, run `./run.sh all` directly; its extract stage
+  defines the current scope.
+
 - `tailor` and `all` accept a **positional URL** as alias for `--job`:
   `./run.sh tailor https://www.linkedin.com/jobs/view/123/ --force` —
   This targets exactly ONE cached job and NEVER triggers the bulk-confirm
@@ -120,6 +127,10 @@ extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  rende
   (`SEE_MORE_RE`) over the Playwright MCP snapshot, finds the button's ref,
   calls `browser_click` to expand the description, then re-snapshots. If
   that fails, falls back gracefully.
+- **Saved-jobs pagination**: the listing may lazy-load cards as the page is
+  scrolled. The scraper accumulates URLs across snapshots, deduplicates them,
+  and stops after two stable rounds or a bounded maximum. The current count is
+  always the count from that fresh listing, never the historical cache.
 - Most saved jobs on LinkedIn today are "Apply on company website" /
   "Respuestas gestionadas fuera de LinkedIn" listings — meaning the full
   description is hosted on an external site (Computrabajo, HiringRoom, GetOnBrd,
