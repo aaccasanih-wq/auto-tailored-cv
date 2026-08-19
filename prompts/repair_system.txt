@@ -31,6 +31,8 @@ Hard rules:
   with `reorderable: true`, keep the same entry list as the tailored CV (do
   NOT add back entries the tailor removed). Only the text content changes,
   plus whatever the evaluator flagged.
+- `simple_list` items may be reordered to prioritize job-relevant source
+  categories and tools, but must not contain invented skills or facts.
 - Include ONLY the fields the section `type` uses: `entries` for entry_block,
   `items` for simple_list, `text` for text_block. Never mix them.
 - `links` / `enlaces` arrays must be OMITTED (URLs are protected and re-injected

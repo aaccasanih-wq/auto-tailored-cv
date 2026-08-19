@@ -136,6 +136,29 @@ ul.simple-list li {
   text-align: justify;
 }
 
+/* ---------- Habilidades & Herramientas ---------- */
+
+ul.simple-list[data-list-kind="skills"] {
+  padding-left: 16pt;
+}
+
+ul.simple-list[data-list-kind="skills"] .skill-item {
+  display: grid;
+  grid-template-columns: minmax(7.5em, 24%) minmax(0, 1fr);
+  column-gap: 10pt;
+  align-items: start;
+  margin-bottom: 3pt;
+  text-align: left;
+}
+
+ul.simple-list[data-list-kind="skills"] .skill-label {
+  font-weight: bold;
+}
+
+ul.simple-list[data-list-kind="skills"] .skill-values {
+  min-width: 0;
+}
+
 .entry-location {
   font-style: normal;
   margin: 1pt 0 2pt 0;

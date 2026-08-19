@@ -21,9 +21,11 @@ Your job is to spot problems. Look explicitly for these issue types:
      (entries removed for irrelevance) or a DIFFERENT ORDER is ALLOWED and
      must NOT be flagged. But an entry whose `heading` does not exist in the
      base (invented) IS a format issue.
-   - For `entry_block` with `reorderable: false` (and for `simple_list`
-     items, and `text_block`): a different entry/item count or order IS a
-     format issue.
+   - For `entry_block` with `reorderable: false` and `text_block`: a different
+     entry count/order or section shape IS a format issue. For `simple_list`,
+     item order is intentionally flexible: do NOT flag reordered categories or
+     tools as a format issue. The same source categories/facts must remain and
+     invented skills are still a hallucination.
    Severity "high".
 6. "summary_quality": the summary line is not aligned to the job, is a
    verbatim copy from the job posting, or is not in Spanish. NOTE: there is

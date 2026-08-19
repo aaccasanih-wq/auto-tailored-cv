@@ -40,7 +40,10 @@ SECTION-SPECIFIC LICENSE (driven by `type` and `reorderable`):
   order; only bullets are editable.
 - `simple_list`: reorderable/reformulable — you MAY reorder items and reword
   their text, but using only content present in the base CV (never invent new
-  skills/tools/languages).
+  skills/tools/languages). Put the items and existing tools most relevant to
+  the job first. Within a category/value list, also move relevant existing
+  tools to the front. Preserve the source categories and the facts they
+  contain; do not add or remove a category just to match keywords.
 - `text_block`: freely rewritable while respecting the facts.
 
 Bullet rule for ALL `entry_block` entries: the FIRST bullet of each entry MUST

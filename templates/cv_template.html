@@ -24,10 +24,20 @@
          data-field="section.{{ si }}.text">{{ section.text }}</p>
 
     {% elif section.type == 'simple_list' %}
-      <ul class="simple-list">
+      {% set is_skills = section.id == 'habilidades' or 'habilidad' in section.title|lower or 'herramienta' in section.title|lower %}
+      <ul class="simple-list"{% if is_skills %} data-list-kind="skills"{% endif %}>
         {% for item in section['items'] %}
+          {% if is_skills %}
+            {% set skill = item.text|skill_item_parts %}
+        <li class="skill-item" contenteditable="true"
+            data-field="section.{{ si }}.item.{{ loop.index0 }}">
+          <span class="skill-label">{{ skill.label }}</span>
+          <span class="skill-values">{{ skill.details }}</span>
+        </li>
+          {% else %}
         <li contenteditable="true"
             data-field="section.{{ si }}.item.{{ loop.index0 }}">{{ item.text }}</li>
+          {% endif %}
         {% endfor %}
       </ul>
 

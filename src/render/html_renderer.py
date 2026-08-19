@@ -40,6 +40,7 @@ def _env() -> Environment:
         lstrip_blocks=False,
     )
     env.filters["entry_links_html"] = _build_entry_links_html
+    env.filters["skill_item_parts"] = _split_skill_item
     return env
 
 
@@ -65,6 +66,20 @@ def _build_entry_links_html(value: Any) -> str:
         else:
             parts.append(label)
     return ' <span class="sep">·</span> '.join(parts)
+
+
+def _split_skill_item(value: Any) -> dict[str, str]:
+    """Split a skill row at its first colon for the two-column layout.
+
+    The YAML contract intentionally keeps simple-list items as plain text, so
+    this presentation detail does not constrain other CVs or the LLM output.
+    Rows without a colon remain entirely in the values column.
+    """
+    text = str(value or "").strip()
+    label, separator, details = text.partition(":")
+    if not separator:
+        return {"label": "", "details": text}
+    return {"label": label.strip(), "details": details.strip()}
 
 
 def _build_contact_html(personal_info: dict[str, Any]) -> str:

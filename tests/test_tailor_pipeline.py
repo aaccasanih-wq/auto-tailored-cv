@@ -553,6 +553,11 @@ class TestPrompts:
         assert "links" in sys_p.lower()
         assert "protected" in sys_p.lower() or "intentionally" in sys_p.lower()
 
+    def test_simple_lists_can_prioritize_relevant_source_tools(self):
+        sys_p, _ = build_tailor_prompt(_base_cv(), _job())
+        assert "most relevant" in sys_p
+        assert "tools to the front" in sys_p
+
     def test_evaluator_includes_all_three(self):
         sys_p, user_p = build_evaluator_prompt(_base_cv(), _job(),
                                                  {"summary": "x", "sections": []})

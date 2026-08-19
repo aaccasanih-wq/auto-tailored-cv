@@ -145,6 +145,17 @@ class TestRender:
         assert 'data-field="section.4.item.0"' in html
         assert 'data-field="section.4.item.1"' in html
 
+    def test_skill_items_render_as_label_and_values_columns(
+        self, tmp_path: Path, base_payload: dict
+    ):
+        base_payload["sections"][3]["items"][0]["text"] = (
+            "Programming: Python, SQL, Excel"
+        )
+        html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
+        assert 'class="simple-list" data-list-kind="skills"' in html
+        assert 'class="skill-label">Programming</span>' in html
+        assert 'class="skill-values">Python, SQL, Excel</span>' in html
+
     def test_entry_links_render_as_anchor_with_url(self, tmp_path: Path, base_payload: dict):
         html = html_renderer.render(base_payload, tmp_path).read_text(encoding="utf-8")
         assert 'href="https://proyecto.example.com/"' in html
