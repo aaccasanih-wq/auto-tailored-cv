@@ -13,7 +13,12 @@ from typing import Any
 
 from src.config import settings
 from src.profile.cv_reader import CVProfile
-from src.tailor.cv_rewriter import _parse_json_loose, _reinject_links, _validate_shape
+from src.tailor.cv_rewriter import (
+    _parse_json_loose,
+    _reinject_links,
+    _remove_summary_text_block_duplicates,
+    _validate_shape,
+)
 from src.tailor.llm_client import LLMClient, LLMResponse
 from src.tailor.prompts import build_repair_prompt
 from src.utils.logging import get_logger
@@ -47,6 +52,7 @@ def repair_cv(
     )
     repaired = _parse_json_loose(response.content)
     warnings = _validate_shape(repaired, base_cv)
+    _remove_summary_text_block_duplicates(repaired, base_cv.summary)
     _reinject_links(repaired, base_cv)
     return RepairResult(
         repaired_json=repaired, raw_response=response, shape_warnings=warnings

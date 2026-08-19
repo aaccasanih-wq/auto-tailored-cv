@@ -33,6 +33,10 @@ correctly).
 `_validate_shape` checks section titles/order/type, entry counts per section
 (driven by `section.reorderable`), immutable-field drift, and deterministically
 drops empty bullets / empty-headed entries WITHOUT any LLM call.
+
+The summary is a short header tagline, separate from any `text_block` section.
+`_remove_summary_text_block_duplicates` prevents a provider from copying a
+whole profile block into the header while preserving the job-specific opening.
 """
 
 from __future__ import annotations
@@ -86,6 +90,7 @@ def tailor_cv(
         )
         tailored = _parse_json_loose(response.content)
         warnings = _validate_shape(tailored, base_cv)
+        _remove_summary_text_block_duplicates(tailored, base_cv.summary)
         if warnings:
             log.warning("tailor produced %d shape warning(s): %s", len(warnings), warnings[:3])
         _reinject_links(tailored, base_cv)
@@ -153,6 +158,40 @@ def _normalize_json_keys(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_json_keys(item) for item in value]
     return value
+
+
+def _remove_summary_text_block_duplicates(
+    tailored: dict[str, Any],
+    fallback_summary: str = "",
+) -> None:
+    """Remove complete text-block copies from the short header summary.
+
+    Matching is whitespace-tolerant because providers may vary line wrapping
+    and spacing. A few shared words are valid; only a substantial contiguous
+    text block is removed. If the summary contained only that block, use the
+    base summary as a safe fallback.
+    """
+    if not isinstance(tailored, dict):
+        return
+    summary = tailored.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return
+
+    minimum_tokens = 6
+    for section in tailored.get("sections", []) or []:
+        if not isinstance(section, dict) or section.get("type") != "text_block":
+            continue
+        text = section.get("text")
+        if not isinstance(text, str) or len(text.split()) < minimum_tokens:
+            continue
+        pattern = r"\s+".join(re.escape(token) for token in text.split())
+        match = re.search(pattern, summary, flags=re.IGNORECASE)
+        if not match:
+            continue
+        summary = (summary[:match.start()] + " " + summary[match.end():]).strip()
+        summary = re.sub(r"\s+([,.;:])", r"\1", summary)
+
+    tailored["summary"] = summary or fallback_summary
 
 
 # --------------------------------------------------------------------------- #
@@ -396,6 +435,7 @@ __all__ = [
     "tailor_cv",
     "save_tailored_json",
     "_validate_shape",
+    "_remove_summary_text_block_duplicates",
     "_reinject_links",
     "_clean_empty_content",
 ]

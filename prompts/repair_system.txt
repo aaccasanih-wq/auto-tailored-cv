@@ -33,6 +33,8 @@ Hard rules:
   plus whatever the evaluator flagged.
 - `simple_list` items may be reordered to prioritize job-relevant source
   categories and tools, but must not contain invented skills or facts.
+- Keep `summary` as a short header tagline. It must not repeat or append the
+  contents of any `text_block` section such as the professional profile.
 - Include ONLY the fields the section `type` uses: `entries` for entry_block,
   `items` for simple_list, `text` for text_block. Never mix them.
 - `links` / `enlaces` arrays must be OMITTED (URLs are protected and re-injected

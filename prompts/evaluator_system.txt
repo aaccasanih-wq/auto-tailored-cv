@@ -31,6 +31,8 @@ Your job is to spot problems. Look explicitly for these issue types:
    verbatim copy from the job posting, or is not in Spanish. NOTE: there is
    NO fixed template — a natural summary is valid. Severity "medium"
    (or "high" if it is a verbatim copy).
+   The summary is only the short header tagline; flag a complete repeated
+   `text_block`/professional-profile paragraph in it as a medium issue.
 7. "immutable_changed": any entry `heading`, `subheading`, `location`, or
    `dates`, or any company/university name, has been reworded. Severity
    "high".

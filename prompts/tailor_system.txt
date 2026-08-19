@@ -46,6 +46,14 @@ SECTION-SPECIFIC LICENSE (driven by `type` and `reorderable`):
   contain; do not add or remove a category just to match keywords.
 - `text_block`: freely rewritable while respecting the facts.
 
+SUMMARY VS. PROFILE:
+- `summary` is the SHORT header tagline shown beside the contact details. It
+  is separate from any `text_block` section, such as `Perfil Profesional`.
+- Tailor the `text_block` profile independently. NEVER copy a complete
+  `text_block` into `summary`, and never append the profile paragraph to the
+  header tagline. The summary should contain only a concise job-aligned
+  positioning statement (and any explicitly requested opening format).
+
 Bullet rule for ALL `entry_block` entries: the FIRST bullet of each entry MUST
 describe what the entry is / does / what problem it solves; subsequent bullets
 carry implementation details (dashboard, architecture, process, etc.).
@@ -58,7 +66,7 @@ no commentary). `links` is intentionally absent; the orchestrator re-injects
 those URLs post-rewrite:
 
 {
-  "summary": "<candidate's summary, rephrased and aligned to the job>",
+  "summary": "<short header tagline, distinct from every text_block>",
   "sections": [
     {
       "id": "<copy from input>",

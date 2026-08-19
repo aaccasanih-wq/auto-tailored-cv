@@ -359,6 +359,15 @@ class TestReinjectLinks:
 
 
 class TestTailorCV:
+    def test_summary_does_not_repeat_text_block(self):
+        canned = _valid_tailored()
+        profile = canned["sections"][0]["text"]
+        canned["summary"] = "Tagline para la oferta. " + profile
+        stub = StubLLMClient([llm_response(_json(canned))])
+        result = tailor_cv(stub, _base_cv(), _job(), model="glm-5.2")
+        assert result.tailored_json["summary"] == "Tagline para la oferta."
+        assert profile not in result.tailored_json["summary"]
+
     def test_routes_correct_payload_through_stub(self):
         base = _base_cv()
         canned = _valid_tailored()
@@ -508,6 +517,14 @@ class TestEvaluator:
 
 
 class TestRepair:
+    def test_repair_also_removes_text_block_duplicate(self):
+        canned = _valid_tailored()
+        profile = canned["sections"][0]["text"]
+        canned["summary"] = "Tagline para la oferta. " + profile
+        stub = StubLLMClient([llm_response(_json(canned))])
+        result = repair_cv(stub, _base_cv(), canned, [])
+        assert result.repaired_json["summary"] == "Tagline para la oferta."
+
     def test_routes_issues_to_prompt(self):
         stub = StubLLMClient([llm_response(_json(_valid_tailored()))])
         issues = [{"id": "1", "type": "verbatim_copy", "severity": "high",
@@ -552,6 +569,11 @@ class TestPrompts:
         sys_p, _ = build_tailor_prompt(_base_cv(), _job())
         assert "links" in sys_p.lower()
         assert "protected" in sys_p.lower() or "intentionally" in sys_p.lower()
+
+    def test_tailor_separates_summary_from_profile(self):
+        sys_p, _ = build_tailor_prompt(_base_cv(), _job())
+        assert "SHORT header tagline" in sys_p
+        assert "NEVER copy a complete" in sys_p
 
     def test_simple_lists_can_prioritize_relevant_source_tools(self):
         sys_p, _ = build_tailor_prompt(_base_cv(), _job())
