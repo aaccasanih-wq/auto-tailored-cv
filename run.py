@@ -307,6 +307,46 @@ def _load_cached_jobs() -> list[SavedJob]:
     return jobs
 
 
+def _load_latest_extracted_jobs() -> list[SavedJob] | None:
+    """Load the latest saved-jobs listing produced by ``extract``.
+
+    Unlike the per-job cache, this manifest contains only the jobs visible in
+    the latest LinkedIn listing and preserves its current recency order. It is
+    therefore the source of truth for ``tailor --last N`` after a fresh extract.
+    ``None`` means no listing manifest is available, so callers can use the
+    historical-cache fallback.
+    """
+    path = settings.jobs_dir / "_all_saved_jobs.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    jobs: list[SavedJob] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        try:
+            saved_order = int(item.get("saved_order", -1) or -1)
+        except (TypeError, ValueError):
+            saved_order = -1
+        jobs.append(SavedJob(
+            title=item.get("title", "") or "",
+            url=item.get("url", "") or "",
+            company=item.get("company", "") or "",
+            location=item.get("location", "") or "",
+            saved_at_iso=item.get("saved_at_iso", "") or "",
+            description=item.get("description", "") or "",
+            job_id=item.get("job_id", "") or "",
+            warnings=item.get("warnings", []) or [],
+            saved_order=saved_order,
+        ))
+    return jobs
+
+
 def _sort_by_recency(jobs: list[SavedJob]) -> list[SavedJob]:
     """Sort cached jobs by how recently they were saved.
 
@@ -318,7 +358,14 @@ def _sort_by_recency(jobs: list[SavedJob]) -> list[SavedJob]:
     dated = [j for j in jobs if (j.saved_at_iso or "").strip()]
     undated = [j for j in jobs if not (j.saved_at_iso or "").strip()]
     dated.sort(key=lambda j: j.saved_at_iso, reverse=True)
-    undated.sort(key=lambda j: j.saved_order)
+    # Historical cache files created before `saved_order` existed carry -1.
+    # They must not outrank a fresh listing whose first item has order 1.
+    undated.sort(
+        key=lambda j: (
+            j.saved_order <= 0,
+            j.saved_order if j.saved_order > 0 else float("inf"),
+        )
+    )
     return dated + undated
 
 
@@ -736,6 +783,14 @@ def cmd_tailor(args: argparse.Namespace) -> int:
     _backfill_index()
     job_url = args.job or getattr(args, "job_url", None)
     jobs = _load_cached_jobs()
+    if args.last and args.last > 0 and not job_url:
+        latest_jobs = _load_latest_extracted_jobs()
+        if latest_jobs is not None:
+            jobs = latest_jobs
+            log.info(
+                "--last usa el último listado extraído de LinkedIn (%d oferta(s) actuales)",
+                len(jobs),
+            )
     if job_url:
         # Auto-detection: if this offer (by canonical job id) already has a CV,
         # tell the user instead of spending tokens regenerating it.
@@ -1076,8 +1131,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--limit", type=int, default=0, help="process at most N jobs (0=all)")
         p.add_argument("--last", type=int, default=0,
                        help="process only the N most recently saved jobs "
-                            "(0=all); sorts by saved_at_iso desc, falling back "
-                            "to the saved-jobs listing order")
+                            "(0=all); uses the latest extract listing, then "
+                            "saved_at_iso/order as fallback")
         p.add_argument("--scraper", default=settings.scraper_backend,
                        choices=("playwright", "browsermcp"),
                        help="scraper backend: 'playwright' (default) or 'browsermcp' (legacy)")

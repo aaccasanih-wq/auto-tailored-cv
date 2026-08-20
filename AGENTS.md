@@ -77,8 +77,11 @@ extract  →  summarize_job  →  tailor  →  evaluate  →  repair  →  rende
   días` / `Saved N days ago` labels of the saved-jobs listing into
   `SavedJob.saved_at_iso`, and always records `saved_order` (1 = most recently
   saved, because LinkedIn orders the listing by recency).
-- `--last N` processes the N most recently saved jobs: it sorts by
-  `saved_at_iso` desc (falling back to `saved_order` for old caches).
+- `--last N` processes the N most recently saved jobs from the latest fresh
+  extraction manifest (`jobs/_all_saved_jobs.json`): it sorts by
+  `saved_at_iso` desc (falling back to the current listing's `saved_order`).
+  It never lets historical per-job cache files without a valid
+  `saved_order` outrank the current listing.
 - The user's cache only gets `saved_at_iso`/`saved_order` on a FRESH
   `extract`. So a query like "generá el CV para la última oferta guardada"
   MUST be answered by running `extract` first, then `tailor --last 1`, and

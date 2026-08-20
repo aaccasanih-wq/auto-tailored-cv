@@ -116,8 +116,8 @@ fallback guarda el orden de listado `saved_order`, porque LinkedIn ordena la
 lista por más reciente primero). Por lo tanto:
 
 1. **SIEMPRE corré primero `./run.sh extract`** para refrescar el cache
-   con `saved_at_iso`/`saved_order` (sin esto, `--last N` elige en orden de
-   archivo = arbitrario).
+   con `saved_at_iso`/`saved_order`; `--last N` usa el manifiesto de esa
+   extracción y no mezcla archivos históricos sin orden válido.
 2. Después usá `./run.sh tailor --last N`.
 3. **Verificá con `--dry-run` primero** (`./run.sh tailor --last N --dry-run`)
    y confirmá que el `[1/N]` que imprime es la oferta que el usuario quiere.

@@ -21,6 +21,7 @@ from run import (
     _job_cache_path,
     _load_cached_jobs,
     _load_index,
+    _load_latest_extracted_jobs,
     _manual_job,
     _save_job_cache,
     _tailor_one,
@@ -166,6 +167,26 @@ class TestSortByRecency:
         ]
         result = run_module._sort_by_recency(jobs)
         assert [j.job_id for j in result] == ["b", "c", "a"]
+
+    def test_missing_saved_order_sorts_after_fresh_listing(self):
+        """Pre-feature historical caches must not beat fresh order 1/2."""
+        jobs = [
+            self._job("old", saved_order=-1),
+            self._job("newest", saved_order=1),
+            self._job("second", saved_order=2),
+        ]
+        result = run_module._sort_by_recency(jobs)
+        assert [j.job_id for j in result] == ["newest", "second", "old"]
+
+    def test_latest_manifest_isolated_from_historical_cache(self, jobs_dir):
+        """--last can use the latest listing instead of all historical files."""
+        (jobs_dir / "_all_saved_jobs.json").write_text(json.dumps([
+            self._job("newest", saved_order=1).to_dict(),
+            self._job("second", saved_order=2).to_dict(),
+        ]), encoding="utf-8")
+        loaded = _load_latest_extracted_jobs()
+        assert loaded is not None
+        assert [job.job_id for job in loaded] == ["newest", "second"]
 
     def test_dated_beat_undated(self):
         jobs = [
