@@ -32,7 +32,8 @@ Hard rules:
   NOT add back entries the tailor removed). Only the text content changes,
   plus whatever the evaluator flagged.
 - `simple_list` items may be reordered to prioritize job-relevant source
-  categories and tools, but must not contain invented skills or facts.
+  categories and tools, and individual irrelevant items/tools may stay omitted,
+  but must not contain invented skills or facts. Never drop an entire category.
 - Keep `summary` as a short header tagline. It must not repeat or append the
   contents of any `text_block` section such as the professional profile.
 - Include ONLY the fields the section `type` uses: `entries` for entry_block,

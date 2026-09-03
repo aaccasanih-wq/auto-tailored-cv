@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# install_skill.sh — install the cv_automatizacion skill into the local
-# Claude Code and Opencode skill directories so it's available from any
+# install_skill.sh — install the project skills into the local
+# Claude Code and Opencode skill directories so they're available from any
 # project, not just this one.
 #
 # Usage:
-#   ./scripts/install_skill.sh           # install (or update) the skill
-#   ./scripts/install_skill.sh --uninstall   # remove the skill
+#   ./scripts/install_skill.sh           # install (or update) the skills
+#   ./scripts/install_skill.sh --uninstall   # remove the skills
 #
-# Safe to re-run; it overwrites existing copies with the repo version.
+# Safe to re-run; it overwrites existing copies with the repo versions.
 
 set -euo pipefail
 
-REPO_SKILL=".claude/skills/cv_automatizacion.md"
-OPENCODE_CMD=".opencode/command/cv_automatizacion.md"
+# <repo skill path>:<global claude file>:<global opencode file> entries.
+# The .opencode/command/ copies are project-local (/command) and need no install.
+SKILLS=(
+  ".claude/skills/cv_automatizacion.md:cv_automatizacion.md:cv_automatizacion/SKILL.md"
+  ".claude/skills/editar_cv.md:editar_cv.md:editar_cv/SKILL.md"
+)
 
-if [ ! -f "$REPO_SKILL" ]; then
-  echo "ERROR: $REPO_SKILL not found. Run this script from the repo root." >&2
-  exit 1
-fi
+for entry in "${SKILLS[@]}"; do
+  if [ ! -f "${entry%%:*}" ]; then
+    echo "ERROR: ${entry%%:*} not found. Run this script from the repo root." >&2
+    exit 1
+  fi
+done
 
 ACTION="install"
 if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "-u" ]; then
@@ -26,37 +32,48 @@ fi
 
 # --- Claude Code (global, available in every project) -----------------------
 CLAUDE_GLOBAL_DIR="$HOME/.claude/skills"
-CLAUDE_GLOBAL_FILE="$CLAUDE_GLOBAL_DIR/cv_automatizacion.md"
 
 # --- Opencode (global, available in every project) --------------------------
-OPENCODE_GLOBAL_DIR="$HOME/.config/opencode/skills/cv_automatizacion"
-OPENCODE_GLOBAL_FILE="$OPENCODE_GLOBAL_DIR/SKILL.md"
+OPENCODE_GLOBAL_DIR="$HOME/.config/opencode/skills"
 
-# --- Opencode command (project-local, used as /cv_automatizacion) -----------
+# --- Opencode commands (project-local, used as /<name>) ---------------------
 # (Already in the repo at .opencode/command/; no install needed.)
 
 if [ "$ACTION" = "uninstall" ]; then
-  rm -f "$CLAUDE_GLOBAL_FILE" "$OPENCODE_GLOBAL_FILE"
-  rmdir "$OPENCODE_GLOBAL_DIR" 2>/dev/null || true
-  echo "Uninstalled cv_automatizacion skill from:"
-  echo "  - $CLAUDE_GLOBAL_FILE"
-  echo "  - $OPENCODE_GLOBAL_FILE"
+  for entry in "${SKILLS[@]}"; do
+    rest="${entry#*:}"
+    claude_file="$CLAUDE_GLOBAL_DIR/${rest%%:*}"
+    opencode_file="$OPENCODE_GLOBAL_DIR/${rest#*:}"
+    rm -f "$claude_file" "$opencode_file"
+    rmdir "$(dirname "$opencode_file")" 2>/dev/null || true
+    echo "Uninstalled:"
+    echo "  - $claude_file"
+    echo "  - $opencode_file"
+  done
   exit 0
 fi
 
 mkdir -p "$CLAUDE_GLOBAL_DIR" "$OPENCODE_GLOBAL_DIR"
-cp "$REPO_SKILL" "$CLAUDE_GLOBAL_FILE"
-cp "$REPO_SKILL" "$OPENCODE_GLOBAL_FILE"
-chmod 644 "$CLAUDE_GLOBAL_FILE" "$OPENCODE_GLOBAL_FILE"
+for entry in "${SKILLS[@]}"; do
+  repo_file="${entry%%:*}"
+  rest="${entry#*:}"
+  claude_file="$CLAUDE_GLOBAL_DIR/${rest%%:*}"
+  opencode_subdir="$OPENCODE_GLOBAL_DIR/$(dirname "${rest#*:}")"
+  opencode_file="$OPENCODE_GLOBAL_DIR/${rest#*:}"
+  mkdir -p "$opencode_subdir"
+  cp "$repo_file" "$claude_file"
+  cp "$repo_file" "$opencode_file"
+  chmod 644 "$claude_file" "$opencode_file"
+  echo "Installed:"
+  echo "  Claude Code  -> $claude_file"
+  echo "  Opencode     -> $opencode_file"
+done
 
-echo "Installed cv_automatizacion skill:"
-echo "  Claude Code  -> $CLAUDE_GLOBAL_FILE"
-echo "  Opencode     -> $OPENCODE_GLOBAL_FILE"
 echo
-echo "The skill is now available from any directory. In Claude Code or"
-echo "Opencode, just say: \"generá el CV para la oferta <url>\" and the"
-echo "assistant will run the pipeline for you."
+echo "The skills are now available from any directory. In Claude Code or"
+echo "Opencode, just say: \"generá el CV para la oferta <url>\" or \"editá mi CV base\" and the"
+echo "assistant will help you."
 echo
-echo "The project-local copy (.opencode/command/cv_automatizacion.md) is"
-echo "also available as the /cv_automatizacion command when you open"
+echo "The project-local copies (.opencode/command/*.md) are"
+echo "also available as /commands when you open"
 echo "Opencode in this repo."

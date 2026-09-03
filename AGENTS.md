@@ -348,10 +348,19 @@ warning.
   este PDF" as a supported task.
 - `.opencode/command/cv_automatizacion.md` — same content, exposed as the
   `/cv_automatizacion` command in Opencode Desktop / CLI.
+- `.claude/skills/editar_cv.md` — skill for punctual edits to the user's
+  `input/base_cv.yaml` (add a skill/tool, create/remove a category, add a
+  job/project, edit bullets, reorder sections): read schema + example → edit
+  YAML → validate with `scripts/validate_base_cv.py` in a loop. Never commit
+  the base CV (gitignored personal data).
+- `.opencode/command/editar_cv.md` — same content, exposed as the
+  `/editar-cv` command in Opencode Desktop / CLI.
+- `scripts/install_skill.sh` installs ALL repo skills (both files above) to
+  the global Claude/Opencode skill dirs; safe to re-run.
 - For Kimi Desktop (no auto-skill loader): paste the file contents into the
   custom instructions / system prompt manually.
 
 ## Test status
 
-`pytest tests/ -v` → 205 passed, 0 failed (verified after every prompt /
+`pytest tests/ -v` → 209 passed, 0 failed (verified after every prompt /
 renderer / scraper edit). Don't break this.

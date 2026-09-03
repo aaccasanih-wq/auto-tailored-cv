@@ -21,7 +21,12 @@ Dado tu CV base en formato **YAML** (`input/base_cv.yaml`, validado contra
 
 1. **Extrae** — se conecta a tu sesión de LinkedIn vía Playwright MCP (con `--user-data-dir` persistente para no tener que reloguearte), navega a la página de "Empleos guardados" y obtiene de cada oferta: título, empresa, ubicación y descripción completa. También puedes pasar **cualquier URL de LinkedIn** (no solo ofertas guardadas) con `--job <url>` y el scraper la procesa directamente.
 2. **Resume la oferta** — un pase del LLM convierte la descripción cruda en un resumen estructurado (`requisitos_duros` / `skills_deseadas` / `funciones_clave`), cacheado una sola vez por oferta. Es lo único que viaja a los pases siguientes (gran ahorro de tokens).
-3. **Adapta** — llama a un LLM para reescribir el CV alineándolo de forma natural con la oferta, sin inventar skills ni copiar frases literales.
+3. **Adapta** — llama a un LLM para reescribir el CV alineándolo de forma natural
+   con la oferta, sin inventar skills ni copiar frases literales. El `Perfil
+   Profesional` se reescribe para cada oferta; los bullets de Experiencia y
+   Proyectos se parafrasean y reordenan por relevancia; las habilidades se
+   priorizan (lo relevante primero) y pueden omitirse items sueltos
+   irrelevantes, siempre conservando todas las categorías del CV base.
 4. **Evalúa** — un segundo pase del LLM revisa el CV adaptado contra la oferta y tu CV base, marcando alucinaciones o copias literales (configurable: `ENABLE_EVALUATION=false` lo desactiva).
 5. **Repara** — si el evaluador encontró problemas semánticos, un tercer pase corrige solo lo marcado.
 6. **Renderiza** — Jinja2 produce `cv.html` y Playwright genera `cv.pdf`.
@@ -66,7 +71,7 @@ Para que el skill funcione desde cualquier carpeta (no solo dentro del repo), co
 .\scripts\install_skill.ps1
 ```
 
-Esto copia el skill a `~/.claude/skills/` y `~/.config/opencode/skills/` para que esté siempre disponible. Una vez instalado, podés decirle a Claude u Opencode desde cualquier carpeta: *"generá el CV para la oferta https://www.linkedin.com/jobs/view/123/"* y él corre el pipeline por vos.
+Esto copia los skills a `~/.claude/skills/` y `~/.config/opencode/skills/` para que estén siempre disponibles. Una vez instalado, podés decirle a Claude u Opencode desde cualquier carpeta: *"generá el CV para la oferta https://www.linkedin.com/jobs/view/123/"* y él corre el pipeline por vos. Para cambios puntuales en tus datos (agregar una habilidad, una experiencia, un proyecto...), decile *"editá mi CV base"* (`/editar-cv`).
 
 ### Opción B — Manual (sin Claude Code ni Opencode)
 
@@ -216,6 +221,10 @@ Si instalaste el skill (Opción A arriba), simplemente dile en lenguaje natural:
   secciones reales a los 3 tipos (`entry_block` / `simple_list` / `text_block`),
   escribe `input/base_cv.yaml`, lo valida con `scripts/validate_base_cv.py` y
   autocorrige hasta que pase — sin que tengas que interpretar errores.
+- *"Editá mi CV base"* / *"agregá X a mis habilidades"* (`/editar-cv`) —
+  cambios puntuales sobre `input/base_cv.yaml` ya creado (skills, categorías,
+  experiencias, proyectos, bullets, orden de secciones), siempre con
+  validación automática. El orden de secciones del YAML es el orden del PDF.
 
 El asistente traduce tu pedido a los flags correctos del CLI y lo ejecuta por vos.
 

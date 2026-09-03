@@ -312,6 +312,29 @@ class TestValidateShape:
         headings = [e["heading"] for e in tailored["sections"][2]["entries"]]
         assert headings == ["KAYLA — Recordatorios de salud"]
 
+    def test_simple_list_omitting_one_item_no_warning(self):
+        """simple_list: dropping ONE irrelevant item is allowed (no warning)."""
+        tailored = _valid_tailored()
+        tailored["sections"][3]["items"] = tailored["sections"][3]["items"][:1]
+        warnings = _validate_shape(tailored, _base_cv())
+        assert warnings == [], f"unexpected warnings: {warnings}"
+
+    def test_simple_list_reordered_items_no_warning(self):
+        """simple_list: reordering items to surface relevance is allowed."""
+        tailored = _valid_tailored()
+        tailored["sections"][3]["items"] = list(
+            reversed(tailored["sections"][3]["items"])
+        )
+        warnings = _validate_shape(tailored, _base_cv())
+        assert warnings == [], f"unexpected warnings: {warnings}"
+
+    def test_simple_list_empty_category_warns(self):
+        """simple_list: dropping an ENTIRE category (all items) warns."""
+        tailored = _valid_tailored()
+        tailored["sections"][3]["items"] = []
+        warnings = _validate_shape(tailored, _base_cv())
+        assert any("entire category" in w for w in warnings)
+
 
 # ---------- _reinject_links tests ----------
 
@@ -579,6 +602,11 @@ class TestPrompts:
         sys_p, _ = build_tailor_prompt(_base_cv(), _job())
         assert "most relevant" in sys_p
         assert "tools to the front" in sys_p
+
+    def test_simple_lists_may_omit_irrelevant_items_but_keep_categories(self):
+        sys_p, _ = build_tailor_prompt(_base_cv(), _job())
+        assert "omit" in sys_p.lower()
+        assert "entire category" in sys_p.lower()
 
     def test_evaluator_includes_all_three(self):
         sys_p, user_p = build_evaluator_prompt(_base_cv(), _job(),

@@ -51,6 +51,11 @@ este procedimiento paso a paso:
 Si el usuario no tiene Claude Code/Opencode, la alternativa es `PROMPT_PARA_TU_CV.md`
 (pegarlo en cualquier chat de IA junto a su CV).
 
+Para cambios puntuales posteriores sobre el base ya creado (agregar una
+habilidad/herramienta, crear/quitar una categoría, añadir una experiencia o
+un proyecto, editar bullets, reordenar secciones...), ver la skill
+`editar_cv` (comando `/editar-cv` en Opencode): el procedimiento vive ahí.
+
 ---
 
 ## Generación / tailorización de CVs para ofertas

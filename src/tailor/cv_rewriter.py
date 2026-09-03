@@ -326,7 +326,10 @@ def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
         invented); bullets editable.
       - `entry_block` non-reorderable: strict 1:1 entries/order/bullets;
         immutable fields must not drift.
-      - `simple_list` / `text_block`: flexible (no shape constraints).
+      - `simple_list`: flexible — items may be reordered, reworded, or
+        individually omitted when irrelevant to the job, but an entire
+        category (all items) must not be dropped and no skill may be invented.
+      - `text_block`: flexible (no shape constraints).
 
     Also performs the deterministic empty-content cleanup (see
     `_clean_empty_content`) BEFORE the structural checks so the final JSON is
@@ -364,6 +367,15 @@ def _validate_shape(tailored: dict[str, Any], base_cv: CVProfile) -> list[str]:
             )
         if t_type in ("simple_list", "text_block"):
             # Flexible: freely reorderable / reformulable.
+            if t_type == "simple_list":
+                base_items = base_s.items or []
+                t_items = tailored_s.get("items", None)
+                if base_items and (not isinstance(t_items, list) or not t_items):
+                    warnings.append(
+                        f"section '{base_s.title}' simple_list is empty: "
+                        f"do not drop an entire category (omit only "
+                        f"individual irrelevant items)"
+                    )
             continue
         # --- entry_block ---
         entries = tailored_s.get("entries", []) or []

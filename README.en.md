@@ -22,7 +22,7 @@ Given your base CV in YAML format (`input/base_cv.yaml`, validated against
 1. **Extracts** — connects to your LinkedIn session via Playwright MCP (with `--user-data-dir` persistence so your login survives across runs), navigates to your saved jobs page, and pulls each saved job's title, company, location, and full description. The scraper clicks the "...más" / "See more" button on long job descriptions so the full text is captured. You can also pass any LinkedIn job URL with `--job <url>`.
 2. **Summarizes the job** — an LLM pass reduces the raw description to a small structured summary (`requisitos_duros` / `skills_deseadas` / `funciones_clave`), cached once per offer. Only that summary travels to the later passes (big token saving). Because this is the only pass that processes the raw third-party job text, its system prompt explicitly treats it as untrusted DATA, never as instructions (prompt-injection mitigation).
 3. **Profiles** — reads `input/base_cv.yaml` (pyyaml + jsonschema) and structures it into **generic** sections: `entry_block`, `simple_list`, or `text_block`. Section names are just titles — any combination/order renders consistently. Hyperlinks are extracted as protected `{label, url}` objects — URLs **never** reach the LLM.
-4. **Tailors** — calls an LLM to rewrite the CV so it aligns naturally with each job's requirements. The prompt forbids inventing facts, copying phrases verbatim, keyword stuffing, changing dates/roles, or touching URLs. Behavior per section is driven by `type` + `reorderable`: `reorderable: true` sections may be reordered/trimmed; `reorderable: false` sections are strict 1:1.
+4. **Tailors** — calls an LLM to rewrite the CV so it aligns naturally with each job's requirements. The prompt forbids inventing facts, copying phrases verbatim, keyword stuffing, changing dates/roles, or touching URLs. Behavior per section is driven by `type` + `reorderable`: `reorderable: true` sections may be reordered/trimmed; `reorderable: false` sections are strict 1:1. The `text_block` profile is rewritten per offer; Experience/Project bullets are paraphrased and reordered by relevance; skills are prioritized (most relevant first) with individual irrelevant items omittable — all source categories are always preserved.
 5. **Evaluates** — a second LLM pass reviews the tailored CV against the job summary and your base CV, flagging hallucinations, incongruities, format issues, and forced alignment (configurable with `ENABLE_EVALUATION=false`).
 6. **Repairs** — if the evaluator found issues, a third LLM pass fixes only the flagged problems.
 7. **Renders HTML** — Jinja2 renders `cv.html` from `templates/cv_template.html`, reusing `templates/cv_style.css`. The header (name, contact line, tagline) is **centered**. Each rewritable block carries `contenteditable="true"` + a unique `data-field`.
@@ -98,7 +98,9 @@ auto-tailored-cv/
 ├── prompts/                     # editable system prompts (.txt)
 ├── PROMPT_PARA_TU_CV.md        # copy-paste prompt to convert your CV in any AI chat
 ├── .claude/skills/cv_automatizacion.md    # natural-language skill
+├── .claude/skills/editar_cv.md             # edit-your-base-CV skill
 ├── .opencode/command/cv_automatizacion.md # opencode command equivalent
+├── .opencode/command/editar_cv.md         # /editar-cv command equivalent
 ├── README.md                   # Spanish docs
 ├── README.en.md                # this file (English)
 ├── LICENSE                     # MIT
@@ -109,7 +111,7 @@ auto-tailored-cv/
 │   ├── build_base_cv.py         # generates a placeholder input/base_cv.yaml
 │   ├── validate_base_cv.py      # standalone YAML validator (schema)
 │   ├── install_libreoffice.sh
-│   └── install_skill.sh         # install the cv_automatizacion skill globally
+│   └── install_skill.sh         # install all skills globally
 ├── run.py                       # CLI entrypoint
 ├── input/
 │   ├── base_cv.yaml             # your base CV (YAML, gitignored)
@@ -264,7 +266,7 @@ Outputs land in `output/<date>/<slug>_<company>/`. At the end of a run, `python 
 
 If you'd rather not use the terminal, you can ask a desktop assistant that
 supports skills / custom commands to drive the pipeline for you. The repo
-ships with a skill file and a one-command installer:
+ships with skill files and a one-command installer:
 
 ```bash
 # Install the skill globally so it works from any directory
@@ -274,17 +276,19 @@ ships with a skill file and a one-command installer:
 ./scripts/install_skill.sh --uninstall
 ```
 
-This copies the skill to:
-- `~/.claude/skills/cv_automatizacion.md` — auto-loaded by **Claude Code**
-  and **Claude Desktop** in any project.
-- `~/.config/opencode/skills/cv_automatizacion/SKILL.md` — auto-loaded by
+This copies the skills to:
+- `~/.claude/skills/cv_automatizacion.md` and `~/.claude/skills/editar_cv.md` —
+  auto-loaded by **Claude Code** and **Claude Desktop** in any project.
+- `~/.config/opencode/skills/cv_automatizacion/SKILL.md` and
+  `~/.config/opencode/skills/editar_cv/SKILL.md` — auto-loaded by
   **Opencode** (CLI or Desktop) in any project.
 
 The repo also keeps project-local copies:
-- `.claude/skills/cv_automatizacion.md` — auto-loaded by Claude Code when
-  you open it in this repo (no install needed).
-- `.opencode/command/cv_automatizacion.md` — exposed as the
-  `/cv_automatizacion` command in Opencode when you open it in this repo.
+- `.claude/skills/cv_automatizacion.md` and `.claude/skills/editar_cv.md` —
+  auto-loaded by Claude Code when you open it in this repo (no install needed).
+- `.opencode/command/cv_automatizacion.md` and
+  `.opencode/command/editar_cv.md` — exposed as the `/cv_automatizacion` and
+  `/editar-cv` commands in Opencode when you open it in this repo.
 
 For **Kimi Desktop** (no skill auto-loader), paste the contents of
 `.claude/skills/cv_automatizacion.md` into your custom instructions or
@@ -296,6 +300,9 @@ https://www.linkedin.com/jobs/view/123/"* and the assistant runs
 assistant to translate natural-language requests ("solo las nuevas",
 "regenerar este: <url>", "revisar el de <job_slug>"…) into the right CLI
 flags. The output and behavior is identical to running the CLI by hand.
+To change your underlying data instead (add a skill, a job, a project, edit
+bullets…), say *"editá mi CV base"* — the `editar_cv` skill (`/editar-cv`)
+edits `input/base_cv.yaml` and validates it automatically.
 
 ---
 

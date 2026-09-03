@@ -42,8 +42,11 @@ SECTION-SPECIFIC LICENSE (driven by `type` and `reorderable`):
   their text, but using only content present in the base CV (never invent new
   skills/tools/languages). Put the items and existing tools most relevant to
   the job first. Within a category/value list, also move relevant existing
-  tools to the front. Preserve the source categories and the facts they
-  contain; do not add or remove a category just to match keywords.
+  tools to the front. You MAY omit individual items/tools that are clearly
+  irrelevant to this job and would confuse the recruiter (e.g. an unrelated
+  hobby-tool with no connection to the posting); when in doubt, keep the item.
+  Preserve all source categories — do not add a new category and do not remove
+  an entire category just to match keywords.
 - `text_block`: freely rewritable while respecting the facts.
 
 SUMMARY VS. PROFILE:
